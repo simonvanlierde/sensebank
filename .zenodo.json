@@ -1,0 +1,13 @@
+{
+  "upload_type": "software",
+  "title": "sensebank",
+  "description": "Multilingual word lists with concept context and group rules",
+  "creators": [
+    {
+      "name": "van Lierde, Simon",
+      "orcid": "0009-0006-6953-909X"
+    }
+  ],
+  "access_right": "open",
+  "license": "mit"
+}
