@@ -7,10 +7,13 @@ requires-python = ">=3.12"
 authors = [{ name = "Simon van Lierde", email = "code@duinlab.nl" }]
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = ["pyyaml>=6.0.3"]
 # PyPI rejects unknown classifiers, so this one blocks an accidental upload.
 # Delete it (and set publish_to_pypi) to publish.
 classifiers = ["Private :: Do Not Upload"]
+
+[project.scripts]
+sensebank = "sensebank.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/simonvanlierde/sensebank"
@@ -22,6 +25,7 @@ dev = [
   "pytest-cov>=7.1.0",
   "ruff>=0.17.1",
   "ty>=0.0.89",
+  "types-pyyaml>=6.0.12.20261103",
 ]
 
 [build-system]
@@ -53,6 +57,8 @@ ignore = [
   "ANN204", # missing-return-type-special-method
   "COM812", # trailing-comma-missing: conflicts with the formatter
   "CPY001", # missing copyright notice
+  "D102",   # undocumented-public-method: dataclass names say it
+  "D103",   # undocumented-public-function: the module docstring and names carry it
   "D105",   # undocumented-magic-method
   "D107",   # undocumented-public-init
   "TD002",  # missing-todo-author: a plain `# TODO:` is enough
@@ -62,13 +68,14 @@ ignore = [
 # Tests assert, use literal expectations, and need no docstrings, return
 # annotations, or package __init__.py.
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "D1", "INP001", "PLR2004", "ANN201"]
+"**/tests/**" = ["S101", "D1", "INP001", "PLR2004", "ANN201", "ANN401", "PLC0415", "S603", "S607"]
+"src/sensebank/cli.py" = ["T201"] # the CLI prints its results
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.pylint]
-allow-magic-value-types = ["int"]
+allow-magic-value-types = ["int", "str"]
 max-args = 10
 
 # A rule set to "warn" reports without failing: ty otherwise exits 1 on warnings too.
