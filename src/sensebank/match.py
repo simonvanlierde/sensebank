@@ -12,6 +12,7 @@ S_PLURAL_LANGUAGES = frozenset({"en", "es", "fr", "pt"})
 
 def normalize(text: str) -> str:
     """Casefold, drop combining marks and strip, so `café` equals `cafe`."""
+    # NOTE: mirrors the 6ss scorer, which also strips Japanese dakuten (ガラス == カラス); fix it there first.
     decomposed = unicodedata.normalize("NFD", text.casefold())
     without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return unicodedata.normalize("NFC", without_marks).strip()

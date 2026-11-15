@@ -46,6 +46,22 @@ See `src/sensebank/model.py`.
   answer that truly names several members; an allowance that no collision needs is reported.
   Deck-wide: `cjk_locales`, `junk_tokens`, `names`, `shared_words`.
 
+### Validation
+
+`load_deck`, `save_deck` and `import-6ss` refuse a malformed deck with an error (exit 3) rather than
+a finding. Text fields (ids, gloss, labels, aliases, sources, group names, source fields, rule lists)
+must already be strings: YAML reads an unquoted `yes`, `0123` or empty value as a bool, int or null,
+and these are refused, not converted. Group rule flags must be `true` or `false`. Unknown rule keys
+are refused. Concept, group and member ids match `[a-z0-9][a-z0-9_-]*` (a group id is also a file
+name, so `../x` is refused before any path is built); locales match `[A-Za-z]{2,3}(-[A-Za-z0-9]+)*`,
+and every concept, group-name and shared-answer locale is one of `deck.yaml`'s `locales`. Group ids
+and members are unique, and `groups/<id>.yaml` holds `id: <id>`. Text holding U+0085, U+2028,
+U+2029 or another C1 control is refused, because YAML would read the saved text back changed.
+An imported deck lists every locale any prompt has, in first-seen order.
+
+`save_deck` validates first, writes each file to a temporary name and renames it into place with LF
+line ends, and deletes a stale group file only after the new ones exist.
+
 A Scattergories category list is a group whose members are category concepts, each with a label
 per locale; its letters, difficulty and playability stay in that game.
 
@@ -60,15 +76,37 @@ translations is not recorded there; treat them as unreviewed.
 ## Checks
 
 `sensebank check` is deterministic and offline. A finding has the shared shape `id, locale, key,
-kind, severity, source, target, context, message, proposed, fingerprint`. `id` is
-`<group>:<concept>:<locale>:<kind>:<normalised word>` (`-` for a concept in no group); the
-fingerprint is a short hash of the entry's label and aliases when the finding was made, so a
+kind, severity, source, target, context, message, proposed, fingerprint`. `key` names the part:
+`label`, `alias`, `name` (a group name), `locale`, `member`, `concept` or `answer`.
+
+Finding ids:
+
+- Concept-level kinds: `<concept>:<locale>:<key>:<kind>:<h>`. These do not depend on which groups
+  hold the concept, so reordering groups keeps every id.
+- Group-level kinds (`answer_shared`, `unknown_member`, `stale_allowance`, and the text checks on a
+  group name): `<group>:<concept>:<locale>:<key>:<kind>:<h>`.
+- `-` stands for a part that does not apply (no locale, or no concept for a group name).
+- `<h>` is the first 8 hex digits of the SHA-256 of the raw word, not the normalised one, so `cat`
+  and `Cat` get different ids and no id holds `:` or a newline. When the same word repeats in one
+  place (`zinger, zinger, zinger`), the n-th finding with an otherwise equal id hashes the word plus
+  `n`. No finding is ever merged into another.
+
+The fingerprint is a short hash of the entry's label and aliases when the finding was made, so a
 later apply can detect stale text. Kinds: `answer_shared` (both sides reported; plural variants
 match as the game scores them), `alias_equals_label`, `duplicate_alias`, `empty_label`,
 `missing_locale`, `junk_text`, `ascii_in_cjk`, `untranslated_alias`, `stray_text`,
-`unknown_member`, `orphan_concept`, and `stale_allowance` (a warning). Decision CSV columns match
-Veriglot's: `id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`.
-Only the findings export exists so far.
+`unknown_member`, `orphan_concept`, and `stale_allowance` (a warning). `junk_text`, `ascii_in_cjk`
+and `stray_text` also run over group names. A concept in several groups gets the alias checks when
+any of its groups sets `alias_distinct`. A `stray_text` proposal drops the stray symbols and extra
+spaces; `proposed` is left empty when the fix would not change the text.
+
+Decision CSV columns match Veriglot's:
+`id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`.
+A spreadsheet runs a cell starting with `=`, `+`, `-`, `@`, tab or CR as a formula, so the text
+columns (`source`, `target`, `proposed`, `edited`, `context`, `message`, `note`) get one leading `'`
+when they start with any number of `'` and then one of those characters. Reading a decision CSV
+back must strip exactly that one `'` from the same columns: `findings.unescape_cell` does it, and
+`apply` uses it. Only the findings export exists so far.
 
 ## One review implementation
 

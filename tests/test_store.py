@@ -48,10 +48,15 @@ def test_export_reproduces_the_seed_file(clean_seed: dict[str, Any], tmp_path: P
 
 
 def test_load_rejects_duplicate_concept_ids(clean_seed: dict[str, Any], tmp_path: Path) -> None:
-    clean_seed["prompts"].append(clean_seed["prompts"][0])
     save_deck(import_6ss(clean_seed, commit="x"), tmp_path)
+    path = tmp_path / "concepts.yaml"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text + text[: text.index("- id: zint")], encoding="utf-8")
     with pytest.raises(DeckError, match="duplicate concept id 'glorp'"):
         load_deck(tmp_path)
+    clean_seed["prompts"].append(clean_seed["prompts"][0])
+    with pytest.raises(DeckError, match="duplicate concept id 'glorp'"):
+        import_6ss(clean_seed, commit="x")
 
 
 def test_load_rejects_unknown_source(clean_seed: dict[str, Any], tmp_path: Path) -> None:

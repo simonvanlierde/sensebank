@@ -94,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         signal.raise_signal(signal.SIGINT)
         return 130
+    except Exception as err:  # noqa: BLE001 # exit 1 means findings, so a crash must not fall through to it
+        print(f"error: unexpected {type(err).__name__}: {err}", file=sys.stderr)
+        return EXIT_FAILED
 
 
 if __name__ == "__main__":

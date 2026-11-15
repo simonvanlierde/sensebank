@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Any
 
-from sensebank.model import Concept, Deck, DeckError, Group, Localized, Rules, SharedAnswer, Source
+from sensebank.model import Concept, Deck, DeckError, Group, Localized, Rules, SharedAnswer, Source, validate_deck
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -56,11 +56,17 @@ def import_6ss(
     ]
     by_id = {g.id: g for g in groups}
     for locale, category, answer, cards in shared or []:
+        if category not in by_id:
+            msg = f"SHARED_ANSWERS names category {category!r}, which the seed file lacks"
+            raise DeckError(msg)
         by_id[category].shared_answers.append(SharedAnswer(locale, answer, sorted(cards)))
-    locales = [t["locale"] for t in seed["prompts"][0]["translations"]] if seed["prompts"] else []
+    # A prompt may lack a locale that a later one has; the deck lists every locale, first seen first.
+    locales = list(dict.fromkeys(t["locale"] for p in seed["prompts"] for t in p["translations"]))
     deck_rules = rules or Rules()
     deck_rules.cjk_locales = deck_rules.cjk_locales or CJK_LOCALES
-    return Deck("six-second-scribbles", locales, {SOURCE_ID: source}, concepts, groups, deck_rules)
+    deck = Deck("six-second-scribbles", locales, {SOURCE_ID: source}, concepts, groups, deck_rules)
+    validate_deck(deck)  # the seed is untrusted: `label: yes` or a group id like `../x` stops here
+    return deck
 
 
 def export_6ss(deck: Deck) -> dict[str, Any]:
@@ -125,25 +131,34 @@ def read_quality_rules(path: Path) -> tuple[Rules, list[tuple[str, str, str, lis
 
     Only the literal tables are evaluated (JUNK_TOKENS, NAMES, SHARED_WORDS, SHARED_ANSWERS).
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    wanted = {"JUNK_TOKENS", "NAMES", "SHARED_WORDS", "SHARED_ANSWERS"}
-    found: dict[str, Any] = {}
-    for node in tree.body:
-        if isinstance(node, ast.AnnAssign):
-            target, value = node.target, node.value
-        elif isinstance(node, ast.Assign):
-            target, value = node.targets[0], node.value
-        else:
-            continue
-        if isinstance(target, ast.Name) and target.id in wanted and value is not None:
-            found[target.id] = ast.literal_eval(_FrozensetToLiteral().visit(value))
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        wanted = {"JUNK_TOKENS", "NAMES", "SHARED_WORDS", "SHARED_ANSWERS"}
+        found: dict[str, Any] = {}
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign):
+                target, value = node.target, node.value
+            elif isinstance(node, ast.Assign):
+                target, value = node.targets[0], node.value
+            else:
+                continue
+            if isinstance(target, ast.Name) and target.id in wanted and value is not None:
+                found[target.id] = ast.literal_eval(_FrozensetToLiteral().visit(value))
+    except (ValueError, SyntaxError) as err:
+        msg = f"{path}: cannot read the rule tables: {err}"
+        raise DeckError(msg) from err
     missing = wanted - found.keys()
     if missing:
         msg = f"{path}: no {', '.join(sorted(missing))}"
         raise DeckError(msg)
-    rules = Rules(
-        junk_tokens=list(found["JUNK_TOKENS"]),
-        names=sorted(found["NAMES"]),
-        shared_words={loc: sorted(words) for loc, words in found["SHARED_WORDS"].items()},
-    )
-    return rules, [(loc, cat, ans, sorted(cards)) for loc, cat, ans, cards in found["SHARED_ANSWERS"]]
+    try:
+        rules = Rules(
+            junk_tokens=list(found["JUNK_TOKENS"]),
+            names=sorted(found["NAMES"]),
+            shared_words={loc: sorted(words) for loc, words in found["SHARED_WORDS"].items()},
+        )
+        shared = [(loc, cat, ans, sorted(cards)) for loc, cat, ans, cards in found["SHARED_ANSWERS"]]
+    except (ValueError, TypeError, AttributeError) as err:
+        msg = f"{path}: rule tables have an unexpected shape: {err}"
+        raise DeckError(msg) from err
+    return rules, shared

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
 Review = Literal["unreviewed", "accepted", "rejected"]
 REVIEWS: tuple[str, ...] = get_args(Review)
 QID = re.compile(r"Q[1-9]\d*")
-SLUG = re.compile(r"[a-z0-9][a-z0-9_-]*")
+SLUG = re.compile(r"[a-z0-9][a-z0-9_-]*")  # concept and group ids; also safe as a file name
+LOCALE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]+)*")
+# Characters YAML reads as line breaks (NEL, LS, PS) or that no word holds (C1 controls): saved raw,
+# NEL comes back as a space, so the text would change on a round trip.
+BAD_CHARS = re.compile("[\x80-\x9f\u2028\u2029]")
 
 
 class DeckError(ValueError):
@@ -135,6 +139,8 @@ class Deck:
 
 
 # --- dict form -------------------------------------------------------------------------------
+# YAML reads unquoted `yes`, `0123` or an empty value as bool, int or None. Every text field must
+# already be a string: coercing with str() would turn `label: yes` into "True".
 
 
 def _review(value: Any, where: str) -> Review:  # noqa: ANN401
@@ -144,26 +150,65 @@ def _review(value: Any, where: str) -> Review:  # noqa: ANN401
     return value
 
 
-def _need(data: Any, key: str, where: str) -> Any:  # noqa: ANN401
-    if not isinstance(data, dict) or key not in data:
+def _map(value: Any, where: str) -> dict[Any, Any]:  # noqa: ANN401
+    if not isinstance(value, dict):
+        msg = f"{where} must be a mapping, got {type(value).__name__}"
+        raise DeckError(msg)
+    return value
+
+
+def _text(value: Any, where: str) -> str:  # noqa: ANN401
+    if not isinstance(value, str):
+        msg = f"{where} must be a string, got {value!r}"
+        raise DeckError(msg)
+    if bad := BAD_CHARS.search(value):
+        msg = f"{where} holds U+{ord(bad.group()):04X}, a line break or control character: {value!r}"
+        raise DeckError(msg)
+    return value
+
+
+def _str(d: dict[str, Any], key: str, where: str, default: str | None = None) -> str:
+    """`d[key]` as a string; required unless a default is given."""
+    if key not in d and default is not None:
+        return default
+    if key not in d:
         msg = f"{where}: missing '{key}'"
         raise DeckError(msg)
-    return data[key]
+    return _text(d[key], f"{where}: {key}")
 
 
 def _strings(value: Any, where: str) -> list[str]:  # noqa: ANN401
     if value is None:
         return []
-    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        msg = f"{where}: expected a list of strings"
+    if not isinstance(value, list):
+        msg = f"{where} must be a list of strings"
         raise DeckError(msg)
-    return list(value)
+    return [_text(v, where) for v in value]
 
 
-def source_from_dict(source_id: str, d: dict[str, Any]) -> Source:
+def _ids(value: Any, where: str, pattern: re.Pattern[str] = SLUG) -> list[str]:  # noqa: ANN401
+    ids = _strings(value, where)
+    for i in ids:
+        if not pattern.fullmatch(i):
+            msg = f"{where}: {i!r} must match {pattern.pattern}"
+            raise DeckError(msg)
+    return ids
+
+
+def _flag(rules: dict[str, Any], key: str, where: str) -> bool:
+    value = rules.get(key, True)
+    if not isinstance(value, bool):
+        msg = f"{where}: rules/{key} must be true or false, got {value!r}"
+        raise DeckError(msg)
+    return value
+
+
+def source_from_dict(source_id: str, d: Any) -> Source:  # noqa: ANN401
+    where = f"source {source_id}"
+    d = _map(d, where)
     return Source(
-        source_id, str(_need(d, "name", f"source {source_id}")), str(_need(d, "licence", f"source {source_id}")),
-        str(d.get("snapshot", "")), str(d.get("url", "")),
+        _text(source_id, "source id"), _str(d, "name", where), _str(d, "licence", where),
+        _str(d, "snapshot", where, ""), _str(d, "url", where, ""),
     )  # fmt: skip
 
 
@@ -176,32 +221,51 @@ def source_to_dict(s: Source) -> dict[str, Any]:
     return d
 
 
-def concept_from_dict(d: dict[str, Any]) -> Concept:
-    cid = str(_need(d, "id", "concept"))
+def _override(o: Any, where: str) -> Override:  # noqa: ANN401
+    o = _map(o, where)
+    source = _str(o, "source", where) if o.get("source") is not None else None
+    return Override(source, _review(o["review"], where) if o.get("review") else None)
+
+
+def _localized(e: Any, where: str) -> Localized:  # noqa: ANN401
+    if not isinstance(e, dict):
+        msg = f"{where}: expected a mapping, got {type(e).__name__}"
+        raise DeckError(msg)
+    overrides = _map(e.get("overrides") or {}, f"{where}: overrides")
+    return Localized(
+        label=_str(e, "label", where),
+        aliases=_strings(e.get("aliases"), f"{where}: aliases"),
+        source=_str(e, "source", where),
+        review=_review(e.get("review", "unreviewed"), where),
+        overrides={
+            _text(w, f"{where}: override"): _override(o, f"{where}: override {w!r}") for w, o in overrides.items()
+        },
+    )
+
+
+def concept_from_dict(d: Any) -> Concept:  # noqa: ANN401
+    if not isinstance(d, dict):
+        msg = f"concept: expected a mapping, got {type(d).__name__}"
+        raise DeckError(msg)
+    cid = _str(d, "id", "concept")
+    if not SLUG.fullmatch(cid):
+        msg = f"concept id {cid!r} must match {SLUG.pattern}"
+        raise DeckError(msg)
     where = f"concept {cid}"
     wd = d.get("wikidata")
     wikidata = None
     if wd is not None:
-        qid = str(_need(wd, "qid", f"{where} wikidata"))
+        qid = _str(_map(wd, f"{where} wikidata"), "qid", f"{where} wikidata")
         if not QID.fullmatch(qid):
             msg = f"{where}: wikidata qid {qid!r} is not Q<number>"
             raise DeckError(msg)
         wikidata = Wikidata(qid, _review(wd.get("review", "unreviewed"), f"{where} wikidata"))
-    locales: dict[str, Localized] = {}
-    for locale, e in (_need(d, "locales", where) or {}).items():
-        w = f"{where}/{locale}"
-        overrides = {
-            word: Override(o.get("source"), _review(o["review"], w) if o.get("review") else None)
-            for word, o in (e.get("overrides") or {}).items()
-        }
-        locales[locale] = Localized(
-            label=str(_need(e, "label", w)),
-            aliases=_strings(e.get("aliases"), w),
-            source=str(_need(e, "source", w)),
-            review=_review(e.get("review", "unreviewed"), w),
-            overrides=overrides,
-        )
-    return Concept(cid, str(_need(d, "gloss", where)), locales, wikidata)
+    if "locales" not in d:
+        msg = f"{where}: missing 'locales'"
+        raise DeckError(msg)
+    raw = _map(d["locales"] or {}, f"{where}: locales")
+    locales = {_text(loc, f"{where}: locale"): _localized(e, f"{where}/{loc}") for loc, e in raw.items()}
+    return Concept(cid, _str(d, "gloss", where), locales, wikidata)
 
 
 def concept_to_dict(c: Concept) -> dict[str, Any]:
@@ -220,24 +284,41 @@ def concept_to_dict(c: Concept) -> dict[str, Any]:
     return d
 
 
-def group_from_dict(d: dict[str, Any]) -> Group:
-    gid = str(_need(d, "id", "group"))
-    if not SLUG.fullmatch(gid):
-        msg = f"group id {gid!r} must match {SLUG.pattern}"
+GROUP_RULES = ("unique_answers", "alias_distinct")
+
+
+def _shared_answer(s: Any, where: str) -> SharedAnswer:  # noqa: ANN401
+    if not isinstance(s, dict):
+        msg = f"{where} entries must be mappings, got {s!r}"
         raise DeckError(msg)
-    rules = d.get("rules") or {}
+    return SharedAnswer(
+        _str(s, "locale", where), _str(s, "answer", where), _ids(s.get("concepts"), f"{where}: concepts")
+    )
+
+
+def group_from_dict(d: Any) -> Group:  # noqa: ANN401
+    gid = _str(_map(d, "group"), "id", "group")
+    check_group_ids([gid])
+    where = f"group {gid}"
+    rules = _map(d.get("rules") or {}, f"{where}: rules")
+    for key in rules:
+        if key not in GROUP_RULES:
+            msg = f"{where}: unknown rules key {key!r} (known: {', '.join(GROUP_RULES)})"
+            raise DeckError(msg)
+    names = _map(d.get("names") or {}, f"{where}: names")
+    shared = d.get("shared_answers") or []
+    if not isinstance(shared, list):
+        msg = f"{where}: shared_answers must be a list"
+        raise DeckError(msg)
     return Group(
         id=gid,
-        kind=str(d.get("kind", "category")),
-        names=dict(d.get("names") or {}),
-        members=_strings(d.get("members"), f"group {gid}"),
-        meta=dict(d.get("meta") or {}),
-        unique_answers=bool(rules.get("unique_answers", True)),
-        alias_distinct=bool(rules.get("alias_distinct", True)),
-        shared_answers=[
-            SharedAnswer(s["locale"], s["answer"], _strings(s["concepts"], f"group {gid}"))
-            for s in d.get("shared_answers") or []
-        ],
+        kind=_str(d, "kind", where, "category"),
+        names={_text(loc, f"{where}: locale"): _text(n, f"{where}: names/{loc}") for loc, n in names.items()},
+        members=_ids(d.get("members"), f"{where}: members"),
+        meta=dict(_map(d.get("meta") or {}, f"{where}: meta")),
+        unique_answers=_flag(rules, "unique_answers", where),
+        alias_distinct=_flag(rules, "alias_distinct", where),
+        shared_answers=[_shared_answer(s, f"{where}: shared_answers") for s in shared],
     )
 
 
@@ -252,3 +333,98 @@ def group_to_dict(g: Group) -> dict[str, Any]:
         ]
     d["members"] = list(g.members)
     return d
+
+
+def rules_from_dict(d: Any) -> Rules:  # noqa: ANN401
+    d = _map(d or {}, "deck rules")
+    for key in d:
+        if key not in Rules.__dataclass_fields__:
+            msg = f"deck rules: unknown key {key!r} (known: {', '.join(Rules.__dataclass_fields__)})"
+            raise DeckError(msg)
+    shared = _map(d.get("shared_words") or {}, "deck rules: shared_words")
+    return Rules(
+        cjk_locales=_strings(d.get("cjk_locales"), "deck rules: cjk_locales"),
+        junk_tokens=_strings(d.get("junk_tokens"), "deck rules: junk_tokens"),
+        names=_strings(d.get("names"), "deck rules: names"),
+        shared_words={
+            _text(loc, "deck rules: shared_words locale"): _strings(words, f"deck rules: shared_words/{loc}")
+            for loc, words in shared.items()
+        },
+    )
+
+
+def rules_to_dict(r: Rules) -> dict[str, Any]:
+    return {k: v for k, v in asdict(r).items() if v}
+
+
+def check_group_ids(ids: list[str]) -> None:
+    """Group ids name files under groups/, so each must be a slug (no `/` or `..`) and unique."""
+    seen: set[str] = set()
+    for gid in ids:
+        if not isinstance(gid, str) or not SLUG.fullmatch(gid):
+            msg = f"group id {gid!r} must match {SLUG.pattern}"
+            raise DeckError(msg)
+        if gid in seen:
+            msg = f"group id {gid!r} is listed twice"
+            raise DeckError(msg)
+        seen.add(gid)
+
+
+def _check_locales(locales: list[str]) -> set[str]:
+    seen: set[str] = set()
+    for locale in locales:
+        if not LOCALE.fullmatch(_text(locale, "deck locale")):
+            msg = f"deck locale {locale!r} must match {LOCALE.pattern}"
+            raise DeckError(msg)
+        if locale in seen:
+            msg = f"deck locale {locale!r} is listed twice"
+            raise DeckError(msg)
+        seen.add(locale)
+    return seen
+
+
+def _check_concepts(deck: Deck, locales: set[str]) -> None:
+    concept_ids: set[str] = set()
+    for concept in deck.concepts:
+        concept_from_dict(concept_to_dict(concept))
+        if concept.id in concept_ids:
+            msg = f"duplicate concept id {concept.id!r}"
+            raise DeckError(msg)
+        concept_ids.add(concept.id)
+        for locale, entry in concept.locales.items():
+            if locale not in locales:
+                msg = f"concept {concept.id}: locale {locale!r} is not in the deck's locales"
+                raise DeckError(msg)
+            used = {entry.source, *(o.source for o in entry.overrides.values() if o.source)}
+            for source_id in sorted(used - deck.sources.keys()):
+                msg = f"concept {concept.id}/{locale}: unknown source {source_id!r}"
+                raise DeckError(msg)
+
+
+def _check_groups(groups: list[Group], locales: set[str]) -> None:
+    check_group_ids([g.id for g in groups])
+    for group in groups:
+        group_from_dict(group_to_dict(group))
+        for locale in [*group.names, *(s.locale for s in group.shared_answers)]:
+            if locale not in locales:
+                msg = f"group {group.id}: locale {locale!r} is not in the deck's locales"
+                raise DeckError(msg)
+        members: set[str] = set()
+        for member in group.members:
+            if member in members:
+                msg = f"group {group.id}: member {member!r} is listed twice"
+                raise DeckError(msg)
+            members.add(member)
+
+
+def validate_deck(deck: Deck) -> None:
+    """Raise DeckError for anything `load_deck` would refuse, so no writer can save it.
+
+    Each part goes through its dict form and back, which applies every field check.
+    """
+    locales = _check_locales(deck.locales)
+    for source in deck.sources.values():
+        source_from_dict(source.id, source_to_dict(source))
+    rules_from_dict(rules_to_dict(deck.rules))
+    _check_concepts(deck, locales)
+    _check_groups(deck.groups, locales)

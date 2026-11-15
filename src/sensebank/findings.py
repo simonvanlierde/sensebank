@@ -1,10 +1,18 @@
-"""Findings and their report formats. The CSV columns are shared with Veriglot's reviewer decisions."""
+"""Findings and their report formats. The CSV columns are shared with Veriglot's reviewer decisions.
+
+CSV escaping: a spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`, tab or CR as a formula.
+`to_csv` writes one extra leading `'` in front of such a cell in the text columns (`TEXT_COLUMNS`),
+and also in front of a cell that is already `'` followed by one of those, so the escape round-trips.
+Whatever reads a decision CSV back must call `unescape_cell` on exactly those columns, which strips
+that one `'` and leaves `'s-Hertogenbosch` alone. The id, locale and fingerprint columns are never escaped.
+"""
 
 from __future__ import annotations
 
 import csv
 import io
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 
@@ -26,6 +34,18 @@ CSV_COLUMNS = [
     "note",
 ]
 DECISIONS = ("accept", "reject", "edit", "")
+TEXT_COLUMNS = ("source", "target", "proposed", "edited", "context", "message", "note")
+_FORMULA = re.compile(r"'*[=+\-@\t\r]")
+
+
+def escape_cell(value: str) -> str:
+    """Prefix `'` so a spreadsheet shows the text instead of running it as a formula."""
+    return f"'{value}" if _FORMULA.match(value) else value
+
+
+def unescape_cell(value: str) -> str:
+    """Undo `escape_cell`; also strips the `'` a reviewer types before `=` in a spreadsheet."""
+    return value[1:] if value.startswith("'") and _FORMULA.match(value) else value
 
 
 @dataclass
@@ -50,7 +70,8 @@ def to_csv(findings: list[Finding]) -> str:
     writer = csv.DictWriter(out, CSV_COLUMNS, lineterminator="\n")
     writer.writeheader()
     for f in findings:
-        writer.writerow({**asdict(f), "decision": "", "edited": "", "note": ""})
+        row = {**asdict(f), "decision": "", "edited": "", "note": ""}
+        writer.writerow({k: escape_cell(v) if k in TEXT_COLUMNS else v for k, v in row.items()})
     return out.getvalue()
 
 
