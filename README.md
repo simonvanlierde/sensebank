@@ -2,8 +2,8 @@
 
 Multilingual word lists with concept context and group rules.
 
-Word lists are stored as plain-text YAML (see the [design](docs/design.md)). The model review loop
-and the web UI are planned; they are not implemented yet.
+Word lists are stored as plain-text YAML (see the [design](docs/design.md)). The review loop (`request`, `review-sheet`,
+`apply`) is implemented; no step calls a model. The web UI is planned.
 
 ## Usage
 
@@ -17,6 +17,21 @@ uv run sensebank export-6ss deck/ seed_data.yaml           # reproduces the seed
 (`--commit` overrides the commit read from git). `--quality-tests` takes the allowlists of the
 Six Second Scribbles quality tests as deck rules. Exit codes: 0 clean, 1 errors found,
 2 usage error, 3 could not run.
+
+### Review loop
+
+```sh
+uv run sensebank request deck/ nl --group animals -o nl.md        # prompt file, no model is called
+# a person or a local model answers it; the reply holds a csv block: id,field,proposed,note
+uv run sensebank review-sheet deck/ reply.md -o decisions.csv     # shared decision columns, decision empty
+# a person fills decision (accept, reject, edit) and edited
+uv run sensebank apply deck/ decisions.csv --dry-run              # every row accounted; exit 1 if any rejected
+uv run sensebank apply deck/ decisions.csv --reviewer "name"      # writes the deck, records provenance
+```
+
+`apply` rejects stale rows (the field changed since the sheet), unknown ids and any change that
+creates a group error, and skips declined, undecided and already applied rows. See the
+[design](docs/design.md#review-loop) for the formats.
 
 ## Scope
 
@@ -38,8 +53,6 @@ prek install
 just check
 just hooks
 ```
-
-Next: port the Six Second Scribbles request/apply prototype.
 
 ## License
 

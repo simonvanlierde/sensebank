@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Fictional 6ss-shaped seed file. Seeded defects are listed in DEFECTS and exist only in
 # `defective_seed`, so the clean one proves the checks stay quiet.
@@ -108,3 +111,13 @@ def defective_seed(clean_seed: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return seed
+
+
+@pytest.fixture
+def deck_dir(clean_seed: dict[str, Any], tmp_path: Path) -> Path:
+    from sensebank.sixss import import_6ss
+    from sensebank.store import save_deck
+
+    directory = tmp_path / "deck"
+    save_deck(import_6ss(clean_seed, commit="abc"), directory)
+    return directory
