@@ -189,3 +189,23 @@ def test_f10_a_semicolon_in_a_proposed_label_is_invalid(deck_dir: Path, capsys: 
     code, out = _apply(deck_dir, [_decision(deck_dir, "glorp", "label", "a;b")], capsys)
     assert (code, out["outcomes"][0]["reason"]) == (1, "invalid")
     assert "separates aliases" in out["outcomes"][0]["detail"]
+
+
+def test_a_csv_block_without_the_header_is_read() -> None:
+    rows = read_proposals("Notes first.\n```csv\nzoo:glorp:es,aliases,x1,n\nzoo:glorp:fr,aliases,x2\n```\n")
+    assert [(r["proposed"], r["note"]) for r in rows] == [("x1", "n"), ("x2", "")]
+
+
+def test_a_note_that_opens_with_a_quoted_word_is_kept() -> None:
+    reply = '```csv\nid,field,proposed,note\nzoo:glorp:es,aliases,(none),"palla gioco" is not used\n```\n'
+    rows = read_proposals(reply)
+    assert rows[0]["note"] == "palla gioco is not used"
+
+
+def test_an_unquoted_comma_in_the_note_keeps_the_rest_of_the_note() -> None:
+    rows = read_proposals("```csv\nid,field,proposed,note\nzoo:glorp:es,aliases,x1,too formal, rare\n```\n")
+    assert rows[0]["note"] == "too formal, rare"
+
+
+def test_an_empty_block_means_no_proposals() -> None:
+    assert read_proposals("No changes needed.\n\n```csv\n```\n") == []

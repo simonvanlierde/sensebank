@@ -176,31 +176,53 @@ def _blocks(text: str) -> list[str]:
     return ["\n".join(b) for b in blocks]
 
 
-def read_proposals(text: str) -> list[dict[str, str]]:
-    """Rows of the reviewer's reply: the last fenced block headed `id,field,proposed,note`, else the whole text."""
-    candidates = _blocks(text) or [text]
+_ROW_ID = re.compile(r"[^:,\s]+:[^:,\s]+:[^:,\s]+")
+
+
+def _proposal_block(candidates: list[str]) -> str | None:
+    """CSV rows without the header from the last proposal block; "" for an empty block (no changes); else None."""
     chosen = None
+    empty = False
     for block in candidates:
-        header = next(csv.reader(io.StringIO(block.lstrip("\ufeff"))), [])
-        if [h.strip().lower() for h in header] == list(PROPOSAL_COLUMNS):
-            chosen = block
+        body = block.lstrip("\ufeff")
+        empty = empty or not body.strip()
+        first = next(csv.reader(io.StringIO(body)), [])
+        if [h.strip().lower() for h in first] == list(PROPOSAL_COLUMNS):
+            chosen = body.split("\n", 1)[1] if "\n" in body else ""
+        elif first and _ROW_ID.fullmatch(first[0].strip()):
+            chosen = body
+    return "" if chosen is None and empty else chosen
+
+
+def read_proposals(text: str) -> list[dict[str, str]]:
+    """Rows of the reviewer's reply: the last fenced block headed `id,field,proposed,note`, else the whole text.
+
+    Models drift from strict CSV, so a block whose first row is already a proposal id counts as headed, a quoted
+    word that opens a note is read leniently, an unquoted comma in the note stays in the note, and an empty block
+    means no proposals. An unbalanced quote is still refused: it means a value was cut off.
+    """
+    chosen = _proposal_block(_blocks(text) or [text])
     if chosen is None:
         msg = f"no CSV block with the header {','.join(PROPOSAL_COLUMNS)}"
         raise UsageError(msg)
     try:
-        rows = list(csv.DictReader(io.StringIO(chosen), strict=True))
+        rows = list(csv.reader(io.StringIO(chosen), strict=True))
     except csv.Error as err:
-        msg = f"proposal CSV is malformed: {err}"
-        raise UsageError(msg) from err
+        if chosen.count('"') % 2:
+            msg = f"proposal CSV is malformed: {err}"
+            raise UsageError(msg) from err
+        rows = list(csv.reader(io.StringIO(chosen)))
     out = []
-    for row in rows:
-        clean = {
-            (k or "").strip().lower(): (v or "").strip() for k, v in row.items() if isinstance(v, str) or v is None
-        }
-        if any("```" in v for v in clean.values()):
+    for fields in rows:
+        if not any(f.strip() for f in fields):
+            continue
+        head, rest = fields[:3], fields[3:]
+        values = [f.strip() for f in head] + [""] * (3 - len(head)) + [",".join(rest).strip()]
+        if any("```" in v for v in values):
             msg = "a proposal value contains a code fence; fix the reply"
             raise UsageError(msg)
-        out.append({c: clean.get(c, "") for c in PROPOSAL_COLUMNS} | {"field": clean.get("field", "").lower()})
+        row = dict(zip(PROPOSAL_COLUMNS, values, strict=True))
+        out.append(row | {"field": row["field"].lower()})
     return out
 
 
