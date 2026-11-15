@@ -2,8 +2,21 @@
 
 Multilingual word lists with concept context and group rules.
 
-This repository contains the initial Python scaffold and [design](docs/design.md).
-Review commands and the web UI are planned; they are not implemented yet.
+Word lists are stored as plain-text YAML (see the [design](docs/design.md)). The model review loop
+and the web UI are planned; they are not implemented yet.
+
+## Usage
+
+```sh
+uv run sensebank import-6ss seed_data.yaml deck/ --quality-tests test_seed_data_quality.py
+uv run sensebank check deck/ --format csv > findings.csv   # text (default), json or csv; exit 1 on errors
+uv run sensebank export-6ss deck/ seed_data.yaml           # reproduces the seed file
+```
+
+`import-6ss` records each word's source as `six-second-scribbles seed_data.yaml @ <commit>`
+(`--commit` overrides the commit read from git). `--quality-tests` takes the allowlists of the
+Six Second Scribbles quality tests as deck rules. Exit codes: 0 clean, 1 errors found,
+2 usage error, 3 could not run.
 
 ## Scope
 
@@ -26,7 +39,7 @@ just check
 just hooks
 ```
 
-Settle storage and the Six Second Scribbles import/export mapping, then port the existing request/apply prototype.
+Next: port the Six Second Scribbles request/apply prototype.
 
 ## License
 

@@ -1,0 +1,164 @@
+"""Six Second Scribbles `seed_data.yaml` import and export.
+
+The seed file has `prompts` (id plus per-locale label and aliases) and `system_categories`
+(id, difficulty, default_locale, per-locale name, member prompt ids). Prompts become concepts and
+categories become groups; difficulty and default_locale ride in the group's `meta`.
+"""
+
+from __future__ import annotations
+
+import ast
+from typing import TYPE_CHECKING, Any
+
+from sensebank.model import Concept, Deck, DeckError, Group, Localized, Rules, SharedAnswer, Source, validate_deck
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+SOURCE_ID = "six-second-scribbles"
+CJK_LOCALES = ["ja", "ko", "zh-CN", "zh-TW"]
+
+
+def import_6ss(
+    seed: dict[str, Any],
+    *,
+    commit: str,
+    rules: Rules | None = None,
+    shared: list[tuple[str, str, str, list[str]]] | None = None,
+) -> Deck:
+    """Build a deck from parsed seed data. Every word is marked as coming from the seed file."""
+    source = Source(
+        SOURCE_ID,
+        f"six-second-scribbles seed_data.yaml @ {commit}",
+        "MIT",
+        snapshot=commit,
+        url="https://github.com/simonvanlierde/6-second-scribbles",
+    )
+    concepts = [
+        Concept(
+            id=p["id"],
+            gloss=next((t["label"] for t in p["translations"] if t["locale"] == "en"), p["id"]),
+            locales={
+                t["locale"]: Localized(t["label"], list(t.get("aliases") or []), source=SOURCE_ID)
+                for t in p["translations"]
+            },
+        )
+        for p in seed["prompts"]
+    ]
+    groups = [
+        Group(
+            id=c["id"],
+            names={t["locale"]: t["name"] for t in c["translations"]},
+            members=list(c["items"]),
+            meta={"difficulty": c["difficulty"], "default_locale": c["default_locale"]},
+        )
+        for c in seed["system_categories"]
+    ]
+    by_id = {g.id: g for g in groups}
+    for locale, category, answer, cards in shared or []:
+        if category not in by_id:
+            msg = f"SHARED_ANSWERS names category {category!r}, which the seed file lacks"
+            raise DeckError(msg)
+        by_id[category].shared_answers.append(SharedAnswer(locale, answer, sorted(cards)))
+    # A prompt may lack a locale that a later one has; the deck lists every locale, first seen first.
+    locales = list(dict.fromkeys(t["locale"] for p in seed["prompts"] for t in p["translations"]))
+    deck_rules = rules or Rules()
+    deck_rules.cjk_locales = deck_rules.cjk_locales or CJK_LOCALES
+    deck = Deck("six-second-scribbles", locales, {SOURCE_ID: source}, concepts, groups, deck_rules)
+    validate_deck(deck)  # the seed is untrusted: `label: yes` or a group id like `../x` stops here
+    return deck
+
+
+def export_6ss(deck: Deck) -> dict[str, Any]:
+    """Rebuild the seed structure. Gloss, Wikidata and provenance have no place in it and are dropped."""
+    prompts = [
+        {
+            "id": c.id,
+            "translations": [
+                {"locale": loc, "label": e.label, "aliases": list(e.aliases)} for loc, e in c.locales.items()
+            ],
+        }
+        for c in deck.concepts
+    ]
+    categories = []
+    for g in deck.groups:
+        for key in ("difficulty", "default_locale"):
+            if key not in g.meta:
+                msg = f"group {g.id!r} has no meta.{key}, which the seed file needs"
+                raise DeckError(msg)
+        categories.append(
+            {
+                "id": g.id,
+                "difficulty": g.meta["difficulty"],
+                "default_locale": g.meta["default_locale"],
+                "translations": [{"locale": loc, "name": name} for loc, name in g.names.items()],
+                "items": list(g.members),
+            }
+        )
+    return {"prompts": prompts, "system_categories": categories}
+
+
+class _FrozensetToLiteral(ast.NodeTransformer):
+    """Rewrite `frozenset(x)` to `x` and inline `*(literal)`, so `ast.literal_eval` reads the tables without running code."""  # noqa: E501
+
+    def _flatten(self, node: ast.Tuple | ast.List | ast.Set) -> ast.AST:
+        self.generic_visit(node)
+        elts: list[ast.expr] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Starred) and isinstance(elt.value, ast.Tuple | ast.List | ast.Set):
+                elts.extend(elt.value.elts)
+            else:
+                elts.append(elt)
+        node.elts = elts
+        return node
+
+    visit_Tuple = visit_List = visit_Set = _flatten  # noqa: N815 # ast.NodeTransformer naming
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:  # ast.NodeTransformer naming
+        self.generic_visit(node)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "frozenset"
+            and len(node.args) <= 1
+            and not node.keywords
+        ):
+            return node.args[0] if node.args else ast.List(elts=[], ctx=ast.Load())
+        return node
+
+
+def read_quality_rules(path: Path) -> tuple[Rules, list[tuple[str, str, str, list[str]]]]:
+    """Read the allowlists out of 6ss's `test_seed_data_quality.py` without importing it.
+
+    Only the literal tables are evaluated (JUNK_TOKENS, NAMES, SHARED_WORDS, SHARED_ANSWERS).
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        wanted = {"JUNK_TOKENS", "NAMES", "SHARED_WORDS", "SHARED_ANSWERS"}
+        found: dict[str, Any] = {}
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign):
+                target, value = node.target, node.value
+            elif isinstance(node, ast.Assign):
+                target, value = node.targets[0], node.value
+            else:
+                continue
+            if isinstance(target, ast.Name) and target.id in wanted and value is not None:
+                found[target.id] = ast.literal_eval(_FrozensetToLiteral().visit(value))
+    except (ValueError, SyntaxError) as err:
+        msg = f"{path}: cannot read the rule tables: {err}"
+        raise DeckError(msg) from err
+    missing = wanted - found.keys()
+    if missing:
+        msg = f"{path}: no {', '.join(sorted(missing))}"
+        raise DeckError(msg)
+    try:
+        rules = Rules(
+            junk_tokens=list(found["JUNK_TOKENS"]),
+            names=sorted(found["NAMES"]),
+            shared_words={loc: sorted(words) for loc, words in found["SHARED_WORDS"].items()},
+        )
+        shared = [(loc, cat, ans, sorted(cards)) for loc, cat, ans, cards in found["SHARED_ANSWERS"]]
+    except (ValueError, TypeError, AttributeError) as err:
+        msg = f"{path}: rule tables have an unexpected shape: {err}"
+        raise DeckError(msg) from err
+    return rules, shared
