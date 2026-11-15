@@ -110,7 +110,7 @@ def _run(args: argparse.Namespace) -> int:
         _emit(request(load_deck(args.deck), args.locale, args.group), args.output)
         return 0
     if args.command == "review-sheet":
-        proposals = read_proposals(args.proposals.read_text(encoding="utf-8"))
+        proposals = read_proposals(args.proposals.read_text(encoding="utf-8-sig"))
         _emit(review_sheet(load_deck(args.deck), proposals), args.output)
         return 0
     if args.command == "apply":
@@ -123,7 +123,7 @@ def _run(args: argparse.Namespace) -> int:
         except ValueError as err:
             msg = f"--date: {err}"
             raise UsageError(msg) from err
-        rows = applying.read_decisions(args.decisions.read_text(encoding="utf-8"))
+        rows = applying.read_decisions(args.decisions.read_text(encoding="utf-8-sig"))
         outcomes, written = applying.apply_file(
             args.deck, rows, reviewer=args.reviewer, date=date, dry_run=args.dry_run
         )

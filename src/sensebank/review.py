@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from sensebank.check import _fp, check_deck
 from sensebank.findings import CSV_COLUMNS, TEXT_COLUMNS, escape_cell
+from sensebank.model import DeckError, validate_deck
 
 if TYPE_CHECKING:
     from sensebank.model import Deck, Localized
@@ -92,26 +93,115 @@ def scope(deck: Deck, concept_id: str) -> Deck:
     return replace(deck, groups=groups, concepts=[c for c in deck.concepts if c.id in wanted])
 
 
-def error_keys(deck: Deck) -> set[tuple[str, str]]:
-    """Error findings as (id, context): context carries the clashing entries, so a clash that grows is new."""
-    return {(f.id, f.context) for f in check_deck(deck) if f.severity == "error"}
+CLASH_MARK = "also accepted by: "
 
 
-def new_errors(deck: Deck, before: set[tuple[str, str]]) -> list[str]:
-    """Messages of error findings the deck has now and `before` did not."""
-    return [
-        f"{f.id}: {f.message}" for f in check_deck(deck) if f.severity == "error" and (f.id, f.context) not in before
-    ]
+def error_keys(deck: Deck) -> dict[str, frozenset[str]]:
+    """Error findings by id, each with the entries an `answer_shared` finding says it clashes with."""
+    return {
+        f.id: frozenset(f.context.partition(CLASH_MARK)[2].split(", ")) if f.kind == "answer_shared" else frozenset()
+        for f in check_deck(deck)
+        if f.severity == "error"
+    }
+
+
+def new_errors(deck: Deck, before: dict[str, frozenset[str]]) -> list[str]:
+    """Messages of error findings that are new: an unknown id, or a clash set that is not within the old one.
+
+    Compared by id, not by text: dropping one party of a three-way clash shrinks the others' context.
+    """
+    out = []
+    for f in check_deck(deck):
+        if f.severity != "error":
+            continue
+        clashes = (
+            frozenset(f.context.partition(CLASH_MARK)[2].split(", ")) if f.kind == "answer_shared" else frozenset()
+        )
+        if f.id not in before or not clashes <= before[f.id]:
+            out.append(f"{f.id}: {f.message}")
+    return out
+
+
+def word_problems(value: str | list[str]) -> list[str]:
+    """Why proposed words cannot be written: odd whitespace, or the `;` that separates aliases in a cell."""
+    problems = []
+    for word in [value] if isinstance(value, str) else value:
+        if " ".join(word.split()) != word:
+            problems.append(f"{word!r} holds whitespace other than single spaces")
+        if ";" in word:
+            problems.append(f"{word!r} holds ';', which separates aliases")
+    return problems
+
+
+def try_change(
+    deck: Deck, concept_id: str, locale: str, field: str, value: str | list[str], *, keep: bool
+) -> list[str]:
+    """Set one field and return why it is not allowed. The change stays only when allowed and `keep`."""
+    concept = deck.concept(concept_id)
+    entry = concept.locales[locale] if concept else None
+    if entry is None:
+        return [f"no entry {concept_id}/{locale}"]
+    if problems := word_problems(value):
+        return problems
+    view = scope(deck, concept_id)
+    before = error_keys(view)
+    old = (entry.label, list(entry.aliases))
+    set_field(entry, field, value)
+    try:
+        validate_deck(view)
+    except DeckError as err:
+        problems = [str(err)]
+    else:
+        problems = new_errors(view, before)
+    if problems or not keep:
+        entry.label, entry.aliases = old
+    return problems
+
+
+_FENCE = re.compile(r"```([A-Za-z]*)[ \t]*$")
+
+
+def _blocks(text: str) -> list[str]:
+    """Bodies of the fenced blocks, fences at column 0 only (so a fence inside a value is not one)."""
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        if current is None and _FENCE.fullmatch(line):
+            current = []
+        elif current is not None and line.rstrip() == "```":
+            blocks.append(current)
+            current = None
+        elif current is not None:
+            current.append(line)
+    return ["\n".join(b) for b in blocks]
 
 
 def read_proposals(text: str) -> list[dict[str, str]]:
-    """Rows of the reviewer's reply. A fenced csv block wins over surrounding reasoning."""
-    fenced = re.findall(r"```(?:csv)?[ \t]*\n(.*?)```", text, flags=re.DOTALL)
-    reader = csv.DictReader(io.StringIO(fenced[-1] if fenced else text))
-    if missing := [c for c in PROPOSAL_COLUMNS if c not in (reader.fieldnames or ())]:
-        msg = f"proposal CSV lacks column(s) {', '.join(missing)}"
+    """Rows of the reviewer's reply: the last fenced block headed `id,field,proposed,note`, else the whole text."""
+    candidates = _blocks(text) or [text]
+    chosen = None
+    for block in candidates:
+        header = next(csv.reader(io.StringIO(block.lstrip("\ufeff"))), [])
+        if [h.strip().lower() for h in header] == list(PROPOSAL_COLUMNS):
+            chosen = block
+    if chosen is None:
+        msg = f"no CSV block with the header {','.join(PROPOSAL_COLUMNS)}"
         raise UsageError(msg)
-    return [{c: (row.get(c) or "").strip() for c in PROPOSAL_COLUMNS} for row in reader]
+    try:
+        rows = list(csv.DictReader(io.StringIO(chosen), strict=True))
+    except csv.Error as err:
+        msg = f"proposal CSV is malformed: {err}"
+        raise UsageError(msg) from err
+    out = []
+    for row in rows:
+        clean = {
+            (k or "").strip().lower(): (v or "").strip() for k, v in row.items() if isinstance(v, str) or v is None
+        }
+        if any("```" in v for v in clean.values()):
+            msg = "a proposal value contains a code fence; fix the reply"
+            raise UsageError(msg)
+        out.append({c: clean.get(c, "") for c in PROPOSAL_COLUMNS} | {"field": clean.get("field", "").lower()})
+    return out
 
 
 def review_sheet(deck: Deck, proposals: list[dict[str, str]]) -> str:
@@ -138,12 +228,11 @@ def review_sheet(deck: Deck, proposals: list[dict[str, str]]) -> str:
             found = {"id": f"{p['id']}:{kind}", "kind": kind, "severity": "error", "message": "unknown entry or field"}
         else:
             english = concept.locales.get("en")
-            view = scope(deck, concept_id)
-            before = error_keys(view)
-            old = (entry.label, list(entry.aliases))
-            set_field(entry, field, parse_value(field, p["proposed"]))
-            problems = new_errors(view, before) if p["proposed"] else ["proposed is empty"]
-            entry.label, entry.aliases = old
+            problems = (
+                try_change(deck, concept_id, locale, field, parse_value(field, p["proposed"]), keep=False)
+                if p["proposed"]
+                else ["proposed is empty"]
+            )
             found = {
                 "id": row_id(group, concept_id, locale, field), "kind": kind,
                 "severity": "error" if problems else "info",

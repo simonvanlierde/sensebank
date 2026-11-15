@@ -144,15 +144,28 @@ request  ->  (reviewer reply)  ->  review-sheet  ->  (person decides)  ->  apply
   implementations show common behaviour.
 - **Fingerprint** is a hash of the one field a row changes. A label row and an aliases row on one
   entry are independent; a second row on a field that an earlier row just changed is stale.
-- **Check gate**: after a change the groups holding the concept are checked again, and an error finding
-  that was not there before (compared by id and context, so a clash that gains a member counts) rejects
-  the row and leaves the deck as it was. Errors the deck already had never block an unrelated fix. A
+- **Check gate**: after a change the groups holding the concept are checked again and the deck is
+  validated as `save_deck` would, so a dry run and a real run give the same outcome for every row. An
+  error finding that was not there before rejects the row and leaves the deck as it was. Findings are
+  compared by id; an `answer_shared` finding counts as new only when it names a clash partner the old
+  finding did not, so removing one party of a three-way clash is accepted. Proposed words may hold no
+  whitespace other than single spaces and no `;` (the alias separator). Errors the deck already had never block an unrelated fix. A
   swap between two entries (an answer moves from one card to another) must therefore list the entry
   that gives the answer up first; a rejected row is fixed by running the same sheet again.
 - **Provenance**: each word an applied row adds gets a per-word override with review `accepted` and a
   source `review-<date>-<reviewer>` (name `review <date> <reviewer>`, licence `unspecified`, because a
   model reply has no licence of its own). Words that leave the entry lose their override.
-- The deck files are re-read before writing; a change on disk since the load aborts with exit 3.
+- Rows apply in order, each judged against the text the earlier rows left. A second row on the same
+  entry and field is therefore stale. To move an alias between two concepts, list the row that gives it
+  up first, or run the same sheet twice; to change one field twice, use two runs.
+- Every file `save_deck` writes (`deck.yaml`, `concepts.yaml`, `groups/*.yaml`) is re-read before
+  writing; a change on disk since the load aborts with exit 3. An existing source with the same id but
+  another name aborts too; the same reviewer and date reuse the source.
+- CSV files are read as UTF-8 with or without a byte order mark. The reply parser takes fences at the
+  start of a line only, the last block headed `id,field,proposed,note` (any case), and refuses a value
+  that holds a code fence.
+- Deck text in the prompt (names, glosses, answers) is collapsed to one line with `|`, code fences and
+  `-->` neutralised, so a deck cannot close the header comment or open a block.
 - Spreadsheet formulas: sheet cells that start with `=`, `+`, `-`, `@`, tab or carriage return get a
   leading `'`, which `apply` strips from `proposed` and `edited`.
 - Exit codes: 0, 1 when any row was rejected, 2 usage error (unknown locale or group, bad CSV header,

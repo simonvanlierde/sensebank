@@ -25,11 +25,15 @@ def _template() -> tuple[str, str]:
     return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()[:12]
 
 
+def _oneline(text: str) -> str:
+    """Deck text as one safe line: no line breaks, table pipes, code fences or comment end."""
+    return " ".join(text.split()).replace("|", "\\|").replace("```", "` ` `").replace("-->", "-- >")
+
+
 def _cell(entry: Localized | None) -> str:
     if entry is None:
         return "(missing)"
-    text = entry.label + (f" (also: {SEPARATOR.join(entry.aliases)})" if entry.aliases else "")
-    return text.replace("|", "\\|").replace("\n", " ")
+    return _oneline(entry.label + (f" (also: {SEPARATOR.join(entry.aliases)})" if entry.aliases else ""))
 
 
 def request(deck: Deck, locale: str, groups: list[str]) -> str:
@@ -46,11 +50,12 @@ def request(deck: Deck, locale: str, groups: list[str]) -> str:
     concepts = sum(len(g.members) for g in picked)
     first = next((m for g in picked for m in g.members if deck.concept(m)), "concept")
     body = Template(template).substitute(
-        deck=deck.name, language=language, none=NONE, groups=len(picked), concepts=concepts,
+        deck=_oneline(deck.name), language=_oneline(language), none=NONE, groups=len(picked), concepts=concepts,
         example_id=entry_id(picked[0].id if picked else "group", first, locale),
     )  # fmt: skip
     header = (
-        f"<!-- sensebank request; template {TEMPLATE} sha256:{digest}; deck {deck.name}; locale {locale}; "
+        f"<!-- sensebank request; template {TEMPLATE} sha256:{digest}; deck {_oneline(deck.name)}; "
+        f"locale {_oneline(locale)}; "
         f"groups {','.join(g.id for g in picked)} -->"
     )
     out = [
@@ -63,8 +68,9 @@ def request(deck: Deck, locale: str, groups: list[str]) -> str:
             f"Rules: unique answers {'on' if group.unique_answers else 'off'}, "
             f"distinct aliases {'on' if group.alias_distinct else 'off'}."
         )
+        local_name = group.names.get(locale, "(missing)")
         out += [
-            f"## {group.id}: {group.names.get('en', group.id)} / {group.names.get(locale, '(missing)')}",
+            f"## {_oneline(group.id)}: {_oneline(group.names.get('en', group.id))} / {_oneline(local_name)}",
             "",
             rules,
         ]
@@ -72,15 +78,16 @@ def request(deck: Deck, locale: str, groups: list[str]) -> str:
         if allowed:
             out += [
                 "Allowed shared answers:",
-                *(f'- {s.locale} "{s.answer}": {", ".join(s.concepts)}' for s in allowed),
+                *(f'- {s.locale} "{_oneline(s.answer)}": {_oneline(", ".join(s.concepts))}' for s in allowed),
             ]
-        out += ["", f"| id | English | {language} |", "| --- | --- | --- |"]
+        out += ["", f"| id | English | {_oneline(language)} |", "| --- | --- | --- |"]
         for member in group.members:
             concept = deck.concept(member)
             if concept is None:
                 continue
             english, target = concept.locales.get("en"), concept.locales.get(locale)
-            ident = entry_id(group.id, concept.id, locale) if target else "(no entry)"
-            out.append(f"| {ident} | {_cell(english) if english else concept.gloss} | {_cell(target)} |")
+            ident = _oneline(entry_id(group.id, concept.id, locale)) if target else "(no entry)"
+            english_cell = _cell(english) if english else _oneline(concept.gloss)
+            out.append(f"| {ident} | {english_cell} | {_cell(target)} |")
         out.append("")
     return "\n".join(out)

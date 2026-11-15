@@ -16,16 +16,13 @@ from sensebank.findings import unescape_cell
 from sensebank.model import DeckError, Override, Source
 from sensebank.review import (
     UsageError,
-    error_keys,
     field_text,
     fingerprint,
-    new_errors,
     parse_row_id,
     parse_value,
-    scope,
-    set_field,
+    try_change,
 )
-from sensebank.store import CONCEPTS_FILE, DECK_FILE, load_deck, save_deck
+from sensebank.store import CONCEPTS_FILE, DECK_FILE, GROUPS_DIR, load_deck, save_deck
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,13 +106,8 @@ def _decide(  # noqa: C901, PLR0911 - one return per outcome keeps the order of 
         return Outcome(row.id, "skipped", "already applied", text=text), None
     if fingerprint(concept.id, ref.locale, entry, ref.field) != row.fingerprint:
         return rejected("stale", "the entry changed after the review", text)
-    view = scope(deck, concept.id)
-    baseline = error_keys(view)
     old = (entry.label, list(entry.aliases))
-    set_field(entry, ref.field, value)
-    problems = new_errors(view, baseline)
-    if problems:
-        entry.label, entry.aliases = old
+    if problems := try_change(deck, concept.id, ref.locale, ref.field, value, keep=True):
         return rejected("invalid", "; ".join(problems), text)
     return Outcome(row.id, "applied", "", text=field_text(entry, ref.field)), (entry, *old)
 
@@ -134,12 +126,18 @@ def apply_decisions(deck: Deck, rows: list[DecisionRow], source: Source) -> list
             entry.overrides.pop(word, None)
         for word in set(entry.words) - {old_label, *old_aliases}:
             entry.overrides[word] = Override(source=source.id, review="accepted")
-        deck.sources[source.id] = source
+        deck.sources.setdefault(source.id, source)
     return outcomes
 
 
-def _snapshot(directory: Path) -> tuple[bytes, bytes]:
-    return (directory / DECK_FILE).read_bytes(), (directory / CONCEPTS_FILE).read_bytes()
+def _snapshot(directory: Path) -> dict[str, bytes]:
+    """Every file `save_deck` writes, and the group listing it prunes by."""
+    names = [
+        DECK_FILE,
+        CONCEPTS_FILE,
+        *sorted(p.relative_to(directory).as_posix() for p in (directory / GROUPS_DIR).glob("*.yaml")),
+    ]
+    return {n: (directory / n).read_bytes() for n in names}
 
 
 def apply_file(
@@ -154,6 +152,9 @@ def apply_file(
     deck = load_deck(directory)
     slug = "".join(ch if ch.isalnum() else "-" for ch in reviewer.lower()).strip("-") or "reviewer"
     source = Source(f"review-{date}-{slug}", f"review {date} {reviewer}", "unspecified", snapshot=date)
+    if (known := deck.sources.get(source.id)) and known.name != source.name:
+        msg = f"source id {source.id!r} already names {known.name!r}; pick another --reviewer or --date"
+        raise DeckError(msg)
     outcomes = apply_decisions(deck, rows, source)
     changed = any(o.status == "applied" for o in outcomes)
     if changed and not dry_run:

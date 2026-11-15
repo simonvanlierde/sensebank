@@ -30,7 +30,8 @@ uv run sensebank apply deck/ decisions.csv --reviewer "name"      # writes the d
 ```
 
 `apply` rejects stale rows (the field changed since the sheet), unknown ids and any change that
-creates a group error, and skips declined, undecided and already applied rows. See the
+creates a group error, and skips declined, undecided and already applied rows. Rows apply in order, so a second row on the same entry and field is stale: list a row that gives an
+alias up before the one that receives it, or run the sheet twice. See the
 [design](docs/design.md#review-loop) for the formats.
 
 ## Scope
