@@ -92,6 +92,34 @@ def export_6ss(deck: Deck) -> dict[str, Any]:
     return {"prompts": prompts, "system_categories": categories}
 
 
+class _FrozensetToLiteral(ast.NodeTransformer):
+    """Rewrite `frozenset(x)` to `x` and inline `*(literal)`, so `ast.literal_eval` reads the tables without running code."""  # noqa: E501
+
+    def _flatten(self, node: ast.Tuple | ast.List | ast.Set) -> ast.AST:
+        self.generic_visit(node)
+        elts: list[ast.expr] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Starred) and isinstance(elt.value, ast.Tuple | ast.List | ast.Set):
+                elts.extend(elt.value.elts)
+            else:
+                elts.append(elt)
+        node.elts = elts
+        return node
+
+    visit_Tuple = visit_List = visit_Set = _flatten  # noqa: N815 # ast.NodeTransformer naming
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:  # ast.NodeTransformer naming
+        self.generic_visit(node)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "frozenset"
+            and len(node.args) <= 1
+            and not node.keywords
+        ):
+            return node.args[0] if node.args else ast.List(elts=[], ctx=ast.Load())
+        return node
+
+
 def read_quality_rules(path: Path) -> tuple[Rules, list[tuple[str, str, str, list[str]]]]:
     """Read the allowlists out of 6ss's `test_seed_data_quality.py` without importing it.
 
@@ -108,8 +136,7 @@ def read_quality_rules(path: Path) -> tuple[Rules, list[tuple[str, str, str, lis
         else:
             continue
         if isinstance(target, ast.Name) and target.id in wanted and value is not None:
-            code = compile(ast.Expression(value), str(path), "eval")
-            found[target.id] = eval(code, {"__builtins__": {}, "frozenset": frozenset})  # noqa: S307 # own repo's literals
+            found[target.id] = ast.literal_eval(_FrozensetToLiteral().visit(value))
     missing = wanted - found.keys()
     if missing:
         msg = f"{path}: no {', '.join(sorted(missing))}"
