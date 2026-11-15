@@ -106,24 +106,73 @@ A spreadsheet runs a cell starting with `=`, `+`, `-`, `@`, tab or CR as a formu
 columns (`source`, `target`, `proposed`, `edited`, `context`, `message`, `note`) get one leading `'`
 when they start with any number of `'` and then one of those characters. Reading a decision CSV
 back must strip exactly that one `'` from the same columns: `findings.unescape_cell` does it, and
-`apply` uses it. Only the findings export exists so far.
+the review loop below uses it for its own sheet.
 
-## One review implementation
+## Review loop
 
-The review module produces findings with stable entry identifiers, source and target
-text, locale, context, an error kind and a proposed correction when available.
-Model calls and domain checks belong inside that module. The CLI, CSV export and
-web UI consume its results rather than implementing checks themselves.
+No model call happens in Sensebank: a person or a later local-model step turns a prompt file into a
+reply, and Sensebank only writes the prompt and applies decisions.
 
-A reviewer can accept, reject or edit a proposal. Applying those decisions checks
-the current input against the reviewed snapshot, validates the resulting changes
-and returns an explicit account of applied and rejected rows. Unknown identifiers,
-stale text and invalid proposals must never disappear silently or overwrite newer edits.
-CSV and the web UI use this same apply implementation.
+```text
+request  ->  (reviewer reply)  ->  review-sheet  ->  (person decides)  ->  apply
+```
 
-Keep these contracts as design requirements until the first working review establishes
-the concrete types. Add adapters where two actual implementations need the same
-interface, rather than introducing a general plugin framework.
+- **`request DECK LOCALE [--group ID ...] [-o FILE]`** writes one Markdown prompt: every group's
+  concepts in English and the target language, the group rules, the allowed shared answers, and the
+  reply contract. The template is a versioned file, `src/sensebank/prompts/review-request.md`; the
+  first line of the output names it and its sha256 prefix. The prompt asks for reasoning per group
+  first and then one short CSV block, not strict JSON, which may lower a small model's judgement.
+- **Reply (proposal) CSV**: `id,field,proposed,note`. `id` is `<group>:<concept>:<locale>` as printed
+  in the prompt, `field` is `label` or `aliases`, and `proposed` is the new label or the complete new
+  alias list separated by `;` (`(none)` removes every alias). A fenced `csv` block among prose is
+  accepted. The reply is untrusted input and is parsed and validated in code.
+- **`review-sheet DECK REPLY [-o FILE]`** merges the reply into the shared decision CSV
+  (`id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`).
+  The model cannot supply `source`, `target` or `fingerprint`, and the deck can; that is why this step
+  exists. Row id: `<group>:<concept>:<locale>:review_<field>`; `severity` is `info`, or `error` when
+  the proposal would be rejected on apply, with the reason in `message`. Unknown ids stay in the sheet
+  as error rows, so nothing vanishes. `decision` is left empty: model agreement is not native
+  correctness, so a person fills it in with `accept`, `reject` or `edit` (the new text in `edited`).
+- **`apply DECK DECISIONS [--dry-run] [--format text|json] [--reviewer NAME] [--date D]`** judges rows
+  in order and writes `concepts.yaml` and `deck.yaml` once, only when a row applied. Every row gets an
+  outcome: `reject` is skipped (declined); empty is skipped (undecided); another value is rejected
+  (invalid decision); `accept` without `proposed` or `edit` without `edited` is rejected (invalid);
+  an id that does not name a member of that group's locale entry is rejected (unknown); text already in
+  place is skipped (already applied); a fingerprint that no longer matches the current field is
+  rejected (stale); a change that creates an error finding is rejected (invalid, with the findings).
+  These are Veriglot's semantics, implemented separately; extract shared code only after both
+  implementations show common behaviour.
+- **Fingerprint** is a hash of the one field a row changes. A label row and an aliases row on one
+  entry are independent; a second row on a field that an earlier row just changed is stale.
+- **Check gate**: after a change the groups holding the concept are checked again and the deck is
+  validated as `save_deck` would, so a dry run and a real run give the same outcome for every row. An
+  error finding that was not there before rejects the row and leaves the deck as it was. Findings are
+  compared by id; an `answer_shared` finding counts as new only when it names a clash partner the old
+  finding did not, so removing one party of a three-way clash is accepted. Proposed words may hold no
+  whitespace other than single spaces and no `;` (the alias separator). Errors the deck already had never block an unrelated fix. A
+  swap between two entries (an answer moves from one card to another) must therefore list the entry
+  that gives the answer up first; a rejected row is fixed by running the same sheet again.
+- **Provenance**: each word an applied row adds gets a per-word override with review `accepted` and a
+  source `review-<date>-<reviewer>` (name `review <date> <reviewer>`, licence `unspecified`, because a
+  model reply has no licence of its own). Words that leave the entry lose their override.
+- Rows apply in order, each judged against the text the earlier rows left. A second row on the same
+  entry and field is therefore stale. To move an alias between two concepts, list the row that gives it
+  up first, or run the same sheet twice; to change one field twice, use two runs.
+- Every file `save_deck` writes (`deck.yaml`, `concepts.yaml`, `groups/*.yaml`) is re-read before
+  writing; a change on disk since the load aborts with exit 3. An existing source with the same id but
+  another name aborts too; the same reviewer and date reuse the source.
+- CSV files are read as UTF-8 with or without a byte order mark. The reply parser takes fences at the
+  start of a line only, the last block headed `id,field,proposed,note` (any case), and refuses a value
+  that holds a code fence.
+- Deck text in the prompt (names, glosses, answers) is collapsed to one line with `|`, code fences and
+  `-->` neutralised, so a deck cannot close the header comment or open a block.
+- Spreadsheet formulas: sheet cells that start with `=`, `+`, `-`, `@`, tab or carriage return get a
+  leading `'`, which `apply` strips from `proposed` and `edited`.
+- Exit codes: 0, 1 when any row was rejected, 2 usage error (unknown locale or group, bad CSV header,
+  bad date), 3 could not run.
+
+A person's accept is recorded as review `accepted`. That says the person took the proposal, not that a
+native speaker verified it.
 
 ## Simple web review
 
@@ -147,12 +196,7 @@ Build Veriglot's first working review before implementing Sensebank. Extract a s
 package only after both implementations demonstrate common behavior. Model choice,
 license, language coverage and memory requirements must be checked before use.
 
-## First working example
+## Next
 
-Storage, the Six Second Scribbles import/export and the deterministic group checks exist (above).
-Next: port the 6ss `request`/`apply` prototype (`backend/scripts/translations.py` on branch
-`archive/word-deck-review`). `request <locale>` writes one Markdown prompt per locale with every
-group's concepts in English and the target language plus the deck rules. `apply <file.csv>` takes the
-model's label and alias changes, skips unknown rows, saves the deck and re-runs the checks. Both map
-onto this model: the prompt reads groups and concepts, and `apply` edits `Localized.label` and
-`aliases` by `(group, concept, locale, field)` and gates on `check_deck` where 6ss ran its pytest file.
+The local web review list (above) and reviewing `check` findings through the same sheet: `apply` takes
+`review_*` rows only, and a `check` finding's fix is applied by hand for now.
