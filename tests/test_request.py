@@ -92,7 +92,7 @@ def test_the_loop_end_to_end(deck_dir: Path, tmp_path: Path, capsys: Any) -> Non
     reply.write_text(REPLY, encoding="utf-8")
     sheet = tmp_path / "decisions.csv"
     assert main(["review-sheet", str(deck_dir), str(reply), "-o", str(sheet)]) == 0
-    rows = list(csv.DictReader(sheet.open(encoding="utf-8")))
+    rows = list(csv.DictReader(io.StringIO(sheet.read_text(encoding="utf-8"))))
     for r in rows:
         r["decision"] = "accept"
     with sheet.open("w", encoding="utf-8", newline="") as f:
