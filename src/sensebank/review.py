@@ -30,6 +30,10 @@ PROPOSAL_COLUMNS = ("id", "field", "proposed", "note")
 class UsageError(ValueError):
     """The caller's input is wrong (exit 2), as opposed to a deck that cannot be read (exit 3)."""
 
+    def __init__(self, message: str, help_: str | None = None) -> None:
+        super().__init__(message)
+        self.help = help_
+
 
 @dataclass(frozen=True)
 class Ref:

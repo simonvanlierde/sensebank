@@ -9,7 +9,9 @@ import signal
 import subprocess
 import sys
 from importlib.metadata import version as _version
+from itertools import pairwise
 from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 import yaml
 
@@ -22,9 +24,26 @@ from sensebank.review import UsageError, read_proposals, review_sheet
 from sensebank.sixss import export_6ss, import_6ss, read_quality_rules
 from sensebank.store import load_deck, save_deck
 
+if TYPE_CHECKING:
+    from typing import NoReturn
+
 EXIT_FINDINGS, EXIT_USAGE, EXIT_FAILED = 1, 2, 3
+COMMANDS = ("import-6ss", "export-6ss", "info", "check", "request", "review-sheet", "apply")
 FORMATS = ("text", "json", "csv")
-STDIN = Path("-")
+
+
+class _Parser(argparse.ArgumentParser):
+    """A usage error is exit 2 with the JSON envelope on stdout when the arguments ask for `--format json`."""
+
+    argv: ClassVar[list[str]] = []
+
+    def error(self, message: str) -> NoReturn:
+        argv = self.argv
+        if "--format=json" not in argv and ("--format", "json") not in pairwise(argv):
+            super().error(message)
+        command = next((a for a in argv if not a.startswith("-")), "")
+        sys.stdout.write(fmt.envelope(command if command in COMMANDS else "", errors=[message]))
+        sys.exit(EXIT_USAGE)
 
 
 def _commit_of(path: Path) -> str:
@@ -40,13 +59,13 @@ def _commit_of(path: Path) -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="sensebank",
         description="Multilingual word lists with concept context and group rules.",
         epilog="exit codes: 0 clean, 1 check found errors or apply rejected rows, 2 usage error, 3 could not run",
     )
     p.add_argument("--version", action="version", version=f"sensebank {_version('sensebank')}")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, parser_class=_Parser)
     imp = sub.add_parser("import-6ss", help="import a Six Second Scribbles seed_data.yaml into a deck directory",
                          epilog="example: sensebank import-6ss seed_data.yaml deck/ --commit 36f09f5")  # fmt: skip
     imp.add_argument("seed", type=Path)
@@ -80,15 +99,13 @@ def _parser() -> argparse.ArgumentParser:
     sheet = sub.add_parser("review-sheet", help="merge a reviewer's proposal CSV into the shared decision CSV",
                            epilog="example: sensebank review-sheet deck/ reply.md -o decisions.csv")  # fmt: skip
     sheet.add_argument("deck", type=Path)
-    sheet.add_argument(
-        "proposals", type=Path, help="the reply to `request`: CSV, or text with a fenced csv block; - reads stdin"
-    )
+    sheet.add_argument("proposals", help="the reply to `request`: CSV, or text with a fenced csv block; - reads stdin")
     sheet.add_argument("-o", "--output", type=Path, help="write here instead of stdout (required with --format json)")
     sheet.add_argument("--format", choices=("text", "json"), default="text", help="json: report the written file")
     app = sub.add_parser("apply", help="apply a decision CSV; exit 1 when rows were rejected",
                          epilog="example: sensebank apply deck/ decisions.csv --dry-run --format json")  # fmt: skip
     app.add_argument("deck", type=Path)
-    app.add_argument("decisions", type=Path, help="the decision CSV; - reads stdin")
+    app.add_argument("decisions", help="the decision CSV; - reads stdin")
     app.add_argument("--dry-run", action="store_true", help="judge every row, write nothing")
     app.add_argument("--format", choices=("text", "json"), default="text")
     app.add_argument("--reviewer", default="reviewer", help="who decided; recorded as the source of changed words")
@@ -96,9 +113,14 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _read_input(path: Path) -> str:
-    """The text of `path`, or of stdin for `-`; a leading BOM is dropped."""
-    return sys.stdin.buffer.read().decode("utf-8-sig") if path == STDIN else path.read_text(encoding="utf-8-sig")
+def _read_input(name: str) -> str:
+    """The text of file `name`, or of stdin for exactly `-` (`./-` is a file); a leading BOM is dropped."""
+    try:
+        raw = sys.stdin.buffer.read() if name == "-" else Path(name).read_bytes()
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as err:
+        msg = f"{'stdin' if name == '-' else name} is not UTF-8"
+        raise UsageError(msg) from err
 
 
 def _report(args: argparse.Namespace, path: Path, counts: dict[str, int]) -> None:
@@ -113,9 +135,6 @@ def _emit(args: argparse.Namespace, text: str, counts: dict[str, int]) -> None:
     if args.output is not None:
         args.output.write_text(text, encoding="utf-8", newline="\n")
         _report(args, args.output, counts)
-    elif args.format == "json":
-        msg = "--format json needs -o: stdout holds the JSON, not the file"
-        raise UsageError(msg)
     else:
         sys.stdout.write(text)
 
@@ -133,6 +152,9 @@ def _info(deck: Deck, path: Path, fmt_: str) -> str:
 
 
 def _run(args: argparse.Namespace) -> int:  # noqa: PLR0911 # one return per command
+    if args.command in ("request", "review-sheet") and args.format == "json" and args.output is None:
+        msg = "--format json needs -o: stdout holds the JSON, not the file"
+        raise UsageError(msg, "add -o FILE")
     if args.command == "import-6ss":
         seed = yaml.safe_load(args.seed.read_text(encoding="utf-8"))
         rules, shared = read_quality_rules(args.quality_tests) if args.quality_tests else (None, None)
@@ -183,24 +205,29 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, io.TextIOWrapper):
             stream.reconfigure(encoding="utf-8", newline="\n")
-    args = _parser().parse_args(argv)  # a usage error exits 2 here, with the usage on stderr
+    _Parser.argv = sys.argv[1:] if argv is None else argv
+    args = _parser().parse_args(argv)  # a usage error exits 2 here
 
-    def fail(message: str, code: int) -> int:
+    def fail(message: str, code: int, help_: str | None = None) -> int:
         # With --format json stdout holds the one error object and stderr stays empty.
         if getattr(args, "format", "text") == "json":
-            sys.stdout.write(fmt.envelope(args.command, errors=[message]))
+            sys.stdout.write(fmt.envelope(args.command, errors=[message], help_=help_))
         else:
             print(f"error: {message}", file=sys.stderr)
+            if help_:
+                print(f"help: {help_}", file=sys.stderr)
         return code
 
     try:
         return _run(args)
     except UsageError as err:
-        return fail(str(err), EXIT_USAGE)
+        return fail(str(err), EXIT_USAGE, err.help)
     except (DeckError, OSError, yaml.YAMLError, KeyError) as err:
         return fail(str(err).splitlines()[0] if str(err) else type(err).__name__, EXIT_FAILED)
     except KeyboardInterrupt:
         fail("interrupted", 130)
+        sys.stdout.flush()  # raise_signal kills the process before the buffers are flushed
+        sys.stderr.flush()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         signal.raise_signal(signal.SIGINT)
         return 130

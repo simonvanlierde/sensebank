@@ -80,13 +80,15 @@ def summary(findings: list[Finding]) -> dict[str, int]:
     return dict(Counter(f.severity for f in findings))
 
 
-def envelope(command: str, body: dict[str, Any] | None = None, errors: list[str] | None = None) -> str:
+def envelope(
+    command: str, body: dict[str, Any] | None = None, errors: list[str] | None = None, help_: str | None = None
+) -> str:
     """The one JSON object every `--format json` run prints: schema_version, command, the work done, errors."""
     out = {
         "schema_version": SCHEMA_VERSION,
         "command": command,
         **(body or {}),
-        "errors": [{"message": m, "help": None} for m in errors or []],
+        "errors": [{"message": m, "help": help_} for m in errors or []],
     }
     return json.dumps(out, ensure_ascii=False, indent=2) + "\n"
 

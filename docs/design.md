@@ -117,24 +117,25 @@ reply, and Sensebank only writes the prompt and applies decisions.
 request  ->  (reviewer reply)  ->  review-sheet  ->  (person decides)  ->  apply
 ```
 
-- **`request DECK LOCALE [--group ID ...] [-o FILE]`** writes one Markdown prompt: every group's
+- **`request DECK LOCALE [--group ID ...] [-o FILE] [--format text|json]`** writes one Markdown prompt: every group's
   concepts in English and the target language, the group rules, the allowed shared answers, and the
   reply contract. The template is a versioned file, `src/sensebank/prompts/review-request.md`; the
   first line of the output names it and its sha256 prefix. The prompt asks for reasoning per group
-  first and then one short CSV block, not strict JSON, which may lower a small model's judgement.
+  first and then one short CSV block, not strict JSON, which may lower a small model's judgement. With `--format json`, `-o` is required and stdout holds `{path, counts}`.
 - **Reply (proposal) CSV**: `id,field,proposed,note`. `id` is `<group>:<concept>:<locale>` as printed
   in the prompt, `field` is `label` or `aliases`, and `proposed` is the new label or the complete new
   alias list separated by `;` (`(none)` removes every alias). A fenced `csv` block among prose is
   accepted. The reply is untrusted input and is parsed and validated in code.
-- **`review-sheet DECK REPLY [-o FILE]`** merges the reply into the shared decision CSV
+- **`review-sheet DECK REPLY [-o FILE] [--format text|json]`** merges the reply into the shared decision CSV
   (`id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`).
   The model cannot supply `source`, `target` or `fingerprint`, and the deck can; that is why this step
-  exists. Row id: `<group>:<concept>:<locale>:review_<field>`; `severity` is `info`, or `error` when
+  exists. `REPLY` may be `-` for stdin; `--format json` needs `-o` and prints `{path, counts}`. Row id: `<group>:<concept>:<locale>:review_<field>`; `severity` is `info`, or `error` when
   the proposal would be rejected on apply, with the reason in `message`. Unknown ids stay in the sheet
   as error rows, so nothing vanishes. `decision` is left empty: model agreement is not native
   correctness, so a person fills it in with `accept`, `reject` or `edit` (the new text in `edited`).
+- **`info DECK [--format text|json]`** lists the deck's locales, concept count and groups (id, kind, member count).
 - **`apply DECK DECISIONS [--dry-run] [--format text|json] [--reviewer NAME] [--date D]`** judges rows
-  in order and writes `concepts.yaml` and `deck.yaml` once, only when a row applied. Every row gets an
+  in order (`DECISIONS` may be `-` for stdin) and writes `concepts.yaml` and `deck.yaml` once, only when a row applied. Every row gets an
   outcome: `reject` is skipped (declined); empty is skipped (undecided); another value is rejected
   (invalid decision); `accept` without `proposed` or `edit` without `edited` is rejected (invalid);
   an id that does not name a member of that group's locale entry is rejected (unknown); text already in

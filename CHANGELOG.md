@@ -14,6 +14,6 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 
 ### Changed
 
-- With `--format json`, errors are one object on stdout (`errors: [{message, help}]`) and stderr stays empty; every JSON object now has a `command` field, and `check` has an `errors` list like `apply`. `--version` reads the package metadata.
+- With `--format json`, errors are one object on stdout (`errors: [{message, help}]`) and stderr stays empty; every JSON object now has a `command` field, and `check` has an `errors` list like `apply`. `--version` reads the package metadata. The `wrote FILE` line of `import-6ss`, `export-6ss`, `request -o` and `review-sheet -o` moved from stderr to stdout. A usage error from argparse is also the JSON object when the arguments hold `--format json`.
 
 [Unreleased]: https://github.com/simonvanlierde/sensebank/commits/main

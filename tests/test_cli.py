@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import signal
+import subprocess
+import sys
+import time
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -146,3 +150,48 @@ def test_info_text_and_version(deck_dir: Path, capsys: Any) -> None:
     with pytest.raises(SystemExit):
         main(["--version"])
     assert capsys.readouterr().out == f"sensebank {metadata.version('sensebank')}\n"
+
+
+def test_argparse_usage_error_is_json_with_format_json(capsys: Any) -> None:
+    for argv in (
+        ["check", "--format", "json"],
+        ["check", "d", "--bogus", "--format=json"],
+        ["nope", "--format", "json"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        captured = capsys.readouterr()
+        assert (exc.value.code, captured.err) == (2, "")
+        jsonschema.validate(json.loads(captured.out), SCHEMA)
+    with pytest.raises(SystemExit):
+        main(["check"])
+    assert capsys.readouterr().err.startswith("usage:")
+
+
+def test_json_without_output_is_refused_before_reading_input(tmp_path: Path, capsys: Any) -> None:
+    code = main(["review-sheet", str(tmp_path / "no-deck"), str(tmp_path / "no-reply"), "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert (code, out["errors"][0]["help"]) == (2, "add -o FILE")
+
+
+def test_dash_dot_slash_is_a_file_and_bad_utf8_is_exit_2(
+    deck_dir: Path, tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("-").write_bytes(b"\xff\xfe\x00bad")
+    assert main(["apply", str(deck_dir), "./-"]) == 2
+    assert capsys.readouterr().err == "error: ./- is not UTF-8\n"
+
+
+def test_sigint_with_json_flushes_the_envelope(deck_dir: Path) -> None:
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "sensebank.cli", "apply", str(deck_dir), "-", "--format", "json"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )  # fmt: skip
+    time.sleep(1.5)  # NOTE: wait until the process reads stdin; a signal sent during start-up skips main's handler
+    proc.send_signal(signal.SIGINT)
+    out, _ = proc.communicate(timeout=10)
+    assert proc.returncode == -signal.SIGINT
+    body = json.loads(out)
+    jsonschema.validate(body, SCHEMA)
+    assert body["errors"][0]["message"] == "interrupted"
