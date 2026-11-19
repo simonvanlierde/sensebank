@@ -15,6 +15,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
+from typing import Any
 
 SCHEMA_VERSION = 1
 CSV_COLUMNS = [
@@ -79,15 +80,26 @@ def summary(findings: list[Finding]) -> dict[str, int]:
     return dict(Counter(f.severity for f in findings))
 
 
+def envelope(
+    command: str, body: dict[str, Any] | None = None, errors: list[str] | None = None, help_: str | None = None
+) -> str:
+    """The one JSON object every `--format json` run prints: schema_version, command, the work done, errors."""
+    out = {
+        "schema_version": SCHEMA_VERSION,
+        "command": command,
+        **(body or {}),
+        "errors": [{"message": m, "help": help_} for m in errors or []],
+    }
+    return json.dumps(out, ensure_ascii=False, indent=2) + "\n"
+
+
 def to_json(findings: list[Finding]) -> str:
     """One object: findings plus counts per severity and kind."""
-    body = {
-        "schema_version": SCHEMA_VERSION,
+    return envelope("check", {
         "summary": {"error": 0, "warning": 0, **summary(findings)},
         "kinds": dict(sorted(Counter(f.kind for f in findings).items())),
         "findings": [asdict(f) for f in findings],
-    }
-    return json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    })  # fmt: skip
 
 
 def to_text(findings: list[Finding]) -> str:

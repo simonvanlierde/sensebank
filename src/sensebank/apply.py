@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Literal
 
-from sensebank.findings import unescape_cell
+from sensebank.findings import envelope, unescape_cell
 from sensebank.model import DeckError, Override, Source
 from sensebank.review import (
     UsageError,
@@ -31,7 +30,6 @@ if TYPE_CHECKING:
 
 Status = Literal["applied", "rejected", "skipped"]
 REQUIRED = ("id", "fingerprint", "decision")
-SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -166,15 +164,12 @@ def apply_file(
 
 
 def to_json(outcomes: list[Outcome], *, dry_run: bool, written: bool) -> str:
-    body = {
-        "schema_version": SCHEMA_VERSION,
+    return envelope("apply", {
         "dry_run": dry_run,
         "written": written,
         "summary": {"applied": 0, "rejected": 0, "skipped": 0} | dict(Counter(o.status for o in outcomes)),
         "outcomes": [asdict(o) for o in outcomes],
-        "errors": [],
-    }
-    return json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+    })  # fmt: skip
 
 
 def to_text(outcomes: list[Outcome], *, dry_run: bool, written: bool) -> str:

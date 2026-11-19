@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sensebank --format json output",
+  "description": "The one object a command prints with --format json. On exit 2 or 3 only schema_version, command and errors are present.",
+  "type": "object",
+  "required": ["schema_version", "command", "errors"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "description": "Empty when the arguments named no known command.", "enum": ["", "import-6ss", "export-6ss", "info", "check", "request", "review-sheet", "apply"] },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["message", "help"],
+        "properties": { "message": { "type": "string" }, "help": { "type": ["string", "null"] } }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "command": { "description": "Empty when the arguments named no known command.", "enum": ["", "import-6ss", "export-6ss", "request", "review-sheet"] }, "errors": { "maxItems": 0 } }, "required": ["command"] },
+      "then": { "required": ["path", "counts"], "properties": { "path": { "type": "string" }, "counts": { "$ref": "#/$defs/counts" } } }
+    },
+    {
+      "if": { "properties": { "command": { "const": "info" }, "errors": { "maxItems": 0 } }, "required": ["command"] },
+      "then": {
+        "required": ["path", "name", "locales", "concepts", "groups"],
+        "properties": {
+          "path": { "type": "string" },
+          "name": { "type": "string" },
+          "locales": { "type": "array", "items": { "type": "string" } },
+          "concepts": { "type": "integer", "minimum": 0 },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "members"],
+              "properties": { "id": { "type": "string" }, "kind": { "type": "string" }, "members": { "type": "integer", "minimum": 0 } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "check" }, "errors": { "maxItems": 0 } }, "required": ["command"] },
+      "then": {
+        "required": ["summary", "kinds", "findings"],
+        "properties": {
+          "summary": { "$ref": "#/$defs/counts" },
+          "kinds": { "$ref": "#/$defs/counts" },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "locale", "key", "kind", "severity", "source", "target", "context", "message", "proposed", "fingerprint"],
+              "properties": { "severity": { "enum": ["error", "warning"] } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "apply" }, "errors": { "maxItems": 0 } }, "required": ["command"] },
+      "then": {
+        "required": ["dry_run", "written", "summary", "outcomes"],
+        "properties": {
+          "dry_run": { "type": "boolean" },
+          "written": { "type": "boolean" },
+          "summary": { "$ref": "#/$defs/counts" },
+          "outcomes": {
+            "type": "array",
+            "items": { "type": "object", "required": ["id", "status"], "properties": { "status": { "enum": ["applied", "rejected", "skipped"] } } }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": { "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } } }
+}

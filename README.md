@@ -18,6 +18,24 @@ uv run sensebank export-6ss deck/ seed_data.yaml           # reproduces the seed
 Six Second Scribbles quality tests as deck rules. Exit codes: 0 clean, 1 errors found,
 2 usage error, 3 could not run.
 
+`sensebank info deck/` lists a deck's locales and groups. `--version` prints the installed package version.
+
+### JSON output
+
+Every command takes `--format json` (`import-6ss`, `export-6ss`, `info`, `request`, `review-sheet`, `check`, `apply`)
+and then prints exactly one object on stdout: `schema_version`, `command`, the result, and `errors`, a list of
+`{message, help}` (`help` is null when no fix is known). A run that fails (exit 2 or 3) prints the object with only
+`schema_version`, `command` and `errors`, and stderr stays empty. `import-6ss`, `export-6ss`, `request` and
+`review-sheet` report `path` and `counts`; with `--format json`, `request` and `review-sheet` need `-o`, as stdout holds
+the JSON. [tests/output.schema.json](tests/output.schema.json) is the JSON Schema; a test validates real output against
+it. An added field is not a breaking change; a removed or retyped one bumps `schema_version`.
+
+`apply` and `review-sheet` read `-` as stdin, so the loop needs no temp files:
+
+```sh
+uv run sensebank request deck/ nl | model | uv run sensebank review-sheet deck/ - -o decisions.csv
+```
+
 ### Review loop
 
 ```sh
