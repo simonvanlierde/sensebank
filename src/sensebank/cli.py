@@ -11,7 +11,6 @@ import sys
 from importlib.metadata import version as _version
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
 
 import yaml
 
@@ -19,31 +18,27 @@ from sensebank import apply as applying
 from sensebank import findings as fmt
 from sensebank.check import check_deck
 from sensebank.model import Deck, DeckError
-from sensebank.request import request
+from sensebank.request import pick_groups, request
 from sensebank.review import UsageError, read_proposals, review_sheet
 from sensebank.sixss import export_6ss, import_6ss, read_quality_rules
 from sensebank.store import load_deck, save_deck
-
-if TYPE_CHECKING:
-    from typing import NoReturn
 
 EXIT_FINDINGS, EXIT_USAGE, EXIT_FAILED = 1, 2, 3
 COMMANDS = ("import-6ss", "export-6ss", "info", "check", "request", "review-sheet", "apply")
 FORMATS = ("text", "json", "csv")
 
 
+class _UsageError(Exception):
+    """argparse found a bad command line; `text` is its usual usage message."""
+
+    def __init__(self, message: str, text: str) -> None:
+        super().__init__(message)
+        self.text = text
+
+
 class _Parser(argparse.ArgumentParser):
-    """A usage error is exit 2 with the JSON envelope on stdout when the arguments ask for `--format json`."""
-
-    argv: ClassVar[list[str]] = []
-
-    def error(self, message: str) -> NoReturn:
-        argv = self.argv
-        if "--format=json" not in argv and ("--format", "json") not in pairwise(argv):
-            super().error(message)
-        command = next((a for a in argv if not a.startswith("-")), "")
-        sys.stdout.write(fmt.envelope(command if command in COMMANDS else "", errors=[message]))
-        sys.exit(EXIT_USAGE)
+    def error(self, message: str) -> None:  # ty: ignore[invalid-method-override]
+        raise _UsageError(message, f"{self.format_usage()}{self.prog}: error: {message}\n")
 
 
 def _commit_of(path: Path) -> str:
@@ -172,8 +167,7 @@ def _run(args: argparse.Namespace) -> int:  # noqa: PLR0911 # one return per com
         return 0
     if args.command == "request":
         deck = load_deck(args.deck)
-        groups = [g for g in deck.groups if not args.group or g.id in args.group]
-        _emit(args, request(deck, args.locale, args.group), {"groups": len(groups)})
+        _emit(args, request(deck, args.locale, args.group), {"groups": len(pick_groups(deck, args.group))})
         return 0
     if args.command == "review-sheet":
         proposals = read_proposals(_read_input(args.proposals))
@@ -201,22 +195,38 @@ def _run(args: argparse.Namespace) -> int:  # noqa: PLR0911 # one return per com
     return EXIT_FINDINGS if any(f.severity == "error" for f in found) else 0
 
 
+def _fail(command: str, message: str, code: int, help_: str | None = None, *, as_json: bool) -> int:
+    """Report a failure: with `--format json` stdout holds the one error object and stderr stays empty."""
+    if as_json:
+        sys.stdout.write(fmt.envelope(command, errors=[message], help_=help_))
+    else:
+        print(f"error: {message}", file=sys.stderr)
+        if help_:
+            print(f"help: {help_}", file=sys.stderr)
+    return code
+
+
+def _bad_command_line(err: _UsageError, argv: list[str], *, as_json: bool) -> int:
+    if not as_json:
+        sys.stderr.write(err.text)
+        return EXIT_USAGE
+    command = next((a for a in argv if not a.startswith("-")), "")
+    return _fail(command if command in COMMANDS else "", str(err), EXIT_USAGE, as_json=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, io.TextIOWrapper):
             stream.reconfigure(encoding="utf-8", newline="\n")
-    _Parser.argv = sys.argv[1:] if argv is None else argv
-    args = _parser().parse_args(argv)  # a usage error exits 2 here
+    argv = sys.argv[1:] if argv is None else argv
+    as_json = "--format=json" in argv or ("--format", "json") in pairwise(argv)
+    try:
+        args = _parser().parse_args(argv)
+    except _UsageError as err:
+        return _bad_command_line(err, argv, as_json=as_json)
 
     def fail(message: str, code: int, help_: str | None = None) -> int:
-        # With --format json stdout holds the one error object and stderr stays empty.
-        if getattr(args, "format", "text") == "json":
-            sys.stdout.write(fmt.envelope(args.command, errors=[message], help_=help_))
-        else:
-            print(f"error: {message}", file=sys.stderr)
-            if help_:
-                print(f"help: {help_}", file=sys.stderr)
-        return code
+        return _fail(args.command, message, code, help_, as_json=as_json)
 
     try:
         return _run(args)

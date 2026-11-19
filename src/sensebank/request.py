@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from sensebank.review import NONE, SEPARATOR, UsageError, entry_id
 
 if TYPE_CHECKING:
-    from sensebank.model import Deck, Localized
+    from sensebank.model import Deck, Group, Localized
 
 TEMPLATE = "review-request.md"
 LANGUAGES = {
@@ -36,15 +36,20 @@ def _cell(entry: Localized | None) -> str:
     return _oneline(entry.label + (f" (also: {SEPARATOR.join(entry.aliases)})" if entry.aliases else ""))
 
 
+def pick_groups(deck: Deck, groups: list[str]) -> list[Group]:
+    """The deck's groups named in `groups` (all when empty); an unknown id is a usage error."""
+    if unknown := [g for g in groups if g not in {x.id for x in deck.groups}]:
+        msg = f"unknown group(s) {', '.join(unknown)} ({', '.join(g.id for g in deck.groups)})"
+        raise UsageError(msg)
+    return [g for g in deck.groups if not groups or g.id in groups]
+
+
 def request(deck: Deck, locale: str, groups: list[str]) -> str:
     """The prompt for `locale`, limited to `groups` (all when empty). The header names the template hash."""
     if locale not in deck.locales:
         msg = f"locale {locale!r} is not in this deck ({', '.join(deck.locales)})"
         raise UsageError(msg)
-    if unknown := [g for g in groups if g not in {x.id for x in deck.groups}]:
-        msg = f"unknown group(s) {', '.join(unknown)} ({', '.join(g.id for g in deck.groups)})"
-        raise UsageError(msg)
-    picked = [g for g in deck.groups if not groups or g.id in groups]
+    picked = pick_groups(deck, groups)
     language = LANGUAGES.get(locale, locale)
     template, digest = _template()
     concepts = sum(len(g.members) for g in picked)

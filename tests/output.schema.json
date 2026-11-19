@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "sensebank --format json output",
-  "description": "The one object a command prints with --format json. On exit 2 or 3 only schema_version, command and errors are present.",
+  "description": "The one object a command prints with --format json.",
   "type": "object",
   "required": ["schema_version", "command", "errors"],
   "properties": {
@@ -18,7 +18,7 @@
   },
   "allOf": [
     {
-      "if": { "properties": { "command": { "description": "Empty when the arguments named no known command.", "enum": ["", "import-6ss", "export-6ss", "request", "review-sheet"] }, "errors": { "maxItems": 0 } }, "required": ["command"] },
+      "if": { "properties": { "command": { "enum": ["import-6ss", "export-6ss", "request", "review-sheet"] }, "errors": { "maxItems": 0 } }, "required": ["command"] },
       "then": { "required": ["path", "counts"], "properties": { "path": { "type": "string" }, "counts": { "$ref": "#/$defs/counts" } } }
     },
     {

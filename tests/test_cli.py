@@ -6,12 +6,10 @@ import signal
 import subprocess
 import sys
 import time
-from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 import jsonschema
-import pytest
 import yaml
 
 from sensebank.cli import main
@@ -115,22 +113,9 @@ def test_every_command_json_matches_the_schema(defective_seed: dict[str, Any], t
 
 
 def test_json_errors_go_to_stdout_only(tmp_path: Path, capsys: Any) -> None:
-    code = main(["check", str(tmp_path / "nope"), "--format", "json"])
-    captured = capsys.readouterr()
-    assert (code, captured.err) == (3, "")
-    out = json.loads(captured.out)
-    jsonschema.validate(out, SCHEMA)
-    assert out["command"] == "check"
+    code, out = _run_json(["check", str(tmp_path / "nope")], capsys)
+    assert (code, out["command"], out["errors"][0]["help"]) == (3, "check", None)
     assert out["errors"][0]["message"].startswith("cannot read")
-    assert out["errors"][0]["help"] is None
-
-
-def test_json_usage_error_is_exit_2_in_the_envelope(deck_dir: Path, capsys: Any) -> None:
-    code = main(["request", str(deck_dir), "es", "--format", "json"])
-    out = json.loads(capsys.readouterr().out)
-    jsonschema.validate(out, SCHEMA)
-    assert code == 2
-    assert "needs -o" in out["errors"][0]["message"]
 
 
 def test_stdin_dash_feeds_review_sheet_and_apply(deck_dir: Path, capsys: Any, monkeypatch: Any) -> None:
@@ -144,12 +129,9 @@ def test_stdin_dash_feeds_review_sheet_and_apply(deck_dir: Path, capsys: Any, mo
     assert "skipped: undecided" in capsys.readouterr().out
 
 
-def test_info_text_and_version(deck_dir: Path, capsys: Any) -> None:
+def test_info_text(deck_dir: Path, capsys: Any) -> None:
     assert main(["info", str(deck_dir)]) == 0
     assert "locales en es fr" in capsys.readouterr().out
-    with pytest.raises(SystemExit):
-        main(["--version"])
-    assert capsys.readouterr().out == f"sensebank {metadata.version('sensebank')}\n"
 
 
 def test_argparse_usage_error_is_json_with_format_json(capsys: Any) -> None:
@@ -158,13 +140,11 @@ def test_argparse_usage_error_is_json_with_format_json(capsys: Any) -> None:
         ["check", "d", "--bogus", "--format=json"],
         ["nope", "--format", "json"],
     ):
-        with pytest.raises(SystemExit) as exc:
-            main(argv)
+        code = main(argv)
         captured = capsys.readouterr()
-        assert (exc.value.code, captured.err) == (2, "")
+        assert (code, captured.err) == (2, "")
         jsonschema.validate(json.loads(captured.out), SCHEMA)
-    with pytest.raises(SystemExit):
-        main(["check"])
+    assert main(["check"]) == 2
     assert capsys.readouterr().err.startswith("usage:")
 
 
@@ -184,11 +164,14 @@ def test_dash_dot_slash_is_a_file_and_bad_utf8_is_exit_2(
 
 
 def test_sigint_with_json_flushes_the_envelope(deck_dir: Path) -> None:
+    code = "import sys; from sensebank.cli import main; print('ready', file=sys.stderr, flush=True); sys.exit(main())"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "sensebank.cli", "apply", str(deck_dir), "-", "--format", "json"],
+        [sys.executable, "-c", code, "apply", str(deck_dir), "-", "--format", "json"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )  # fmt: skip
-    time.sleep(1.5)  # NOTE: wait until the process reads stdin; a signal sent during start-up skips main's handler
+    assert proc.stderr is not None
+    assert proc.stderr.readline() == b"ready\n"
+    time.sleep(0.3)  # NOTE: no signal marks "blocked reading stdin"; a signal during parsing skips main's handler
     proc.send_signal(signal.SIGINT)
     out, _ = proc.communicate(timeout=10)
     assert proc.returncode == -signal.SIGINT

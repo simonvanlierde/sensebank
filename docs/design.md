@@ -121,7 +121,7 @@ request  ->  (reviewer reply)  ->  review-sheet  ->  (person decides)  ->  apply
   concepts in English and the target language, the group rules, the allowed shared answers, and the
   reply contract. The template is a versioned file, `src/sensebank/prompts/review-request.md`; the
   first line of the output names it and its sha256 prefix. The prompt asks for reasoning per group
-  first and then one short CSV block, not strict JSON, which may lower a small model's judgement. With `--format json`, `-o` is required and stdout holds `{path, counts}`.
+  first and then one short CSV block, not strict JSON, which may lower a small model's judgement.
 - **Reply (proposal) CSV**: `id,field,proposed,note`. `id` is `<group>:<concept>:<locale>` as printed
   in the prompt, `field` is `label` or `aliases`, and `proposed` is the new label or the complete new
   alias list separated by `;` (`(none)` removes every alias). A fenced `csv` block among prose is
@@ -129,7 +129,7 @@ request  ->  (reviewer reply)  ->  review-sheet  ->  (person decides)  ->  apply
 - **`review-sheet DECK REPLY [-o FILE] [--format text|json]`** merges the reply into the shared decision CSV
   (`id,locale,key,kind,severity,source,target,context,message,proposed,fingerprint,decision,edited,note`).
   The model cannot supply `source`, `target` or `fingerprint`, and the deck can; that is why this step
-  exists. `REPLY` may be `-` for stdin; `--format json` needs `-o` and prints `{path, counts}`. Row id: `<group>:<concept>:<locale>:review_<field>`; `severity` is `info`, or `error` when
+  exists. `REPLY` may be `-` for stdin. Row id: `<group>:<concept>:<locale>:review_<field>`; `severity` is `info`, or `error` when
   the proposal would be rejected on apply, with the reason in `message`. Unknown ids stay in the sheet
   as error rows, so nothing vanishes. `decision` is left empty: model agreement is not native
   correctness, so a person fills it in with `accept`, `reject` or `edit` (the new text in `edited`).
