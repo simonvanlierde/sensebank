@@ -16,4 +16,8 @@ All notable changes are recorded here, following [Keep a Changelog](https://keep
 
 - With `--format json`, errors are one object on stdout (`errors: [{message, help}]`) and stderr stays empty; every JSON object now has a `command` field, and `check` has an `errors` list like `apply`. `--version` reads the package metadata. The `wrote FILE` line of `import-6ss`, `export-6ss`, `request -o` and `review-sheet -o` moved from stderr to stdout. A usage error from argparse is also the JSON object when the arguments hold `--format json`.
 
+### Fixed
+
+- Group and alias checks no longer treat Japanese words that differ only by a dakuten or handakuten as the same answer (ガラス and カラス, ばす and はす), matching the Six Second Scribbles scorer. Other accents stay optional, so `café` still matches `cafe`.
+
 [Unreleased]: https://github.com/simonvanlierde/sensebank/commits/main

@@ -242,3 +242,14 @@ def test_csv_neutralises_formula_cells_and_round_trips(defective_seed: dict[str,
     assert rows[0]["id"] == findings[0].id  # only text columns are escaped
     assert [unescape_cell(r["target"]) for r in rows[: len(texts)]] == texts
     assert [unescape_cell(r["message"]) for r in rows[: len(texts)]] == texts
+
+
+def test_japanese_voicing_keeps_group_answers_apart(clean_seed: dict[str, Any]) -> None:
+    import unicodedata
+
+    nfd_bus = unicodedata.normalize("NFD", "ばす")
+    clean_seed["prompts"][0]["translations"].append({"locale": "ja", "label": "ガラス", "aliases": ["ばす"]})
+    clean_seed["prompts"][1]["translations"].append({"locale": "ja", "label": "カラス", "aliases": [nfd_bus]})
+    shared = [(f.source, f.target) for f in check_deck(import_6ss(clean_seed, commit="x")) if f.kind == "answer_shared"]
+    # ガラス (glass) and カラス (crow) differ; the decomposed ばす is still the composed one
+    assert sorted(shared) == [("glorp", "ばす"), ("zint", nfd_bus)]
