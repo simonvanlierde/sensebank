@@ -8,13 +8,18 @@ import unicodedata
 # Languages whose regular plural adds -s or -es; others form plurals differently, so a blind -s
 # would join two unrelated words.
 S_PLURAL_LANGUAGES = frozenset({"en", "es", "fr", "pt"})
+# Japanese dakuten and handakuten: combining marks that make a different letter (ガラス is not カラス).
+_JAPANESE_VOICING_MARKS = frozenset({"\u3099", "\u309a"})
 
 
 def normalize(text: str) -> str:
-    """Casefold, drop combining marks and strip, so `café` equals `cafe`."""
-    # NOTE: mirrors the 6ss scorer, which also strips Japanese dakuten (ガラス == カラス); fix it there first.
+    """Casefold, drop optional combining marks and strip, so `café` equals `cafe`.
+
+    Keeps the Japanese dakuten and handakuten (U+3099, U+309A), which change the letter, so
+    `ガラス` differs from `カラス`. NFC and NFD spellings of one word normalize alike.
+    """
     decomposed = unicodedata.normalize("NFD", text.casefold())
-    without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    without_marks = "".join(ch for ch in decomposed if ch in _JAPANESE_VOICING_MARKS or not unicodedata.combining(ch))
     return unicodedata.normalize("NFC", without_marks).strip()
 
 
